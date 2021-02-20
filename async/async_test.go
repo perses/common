@@ -14,7 +14,7 @@ func doneAsync() int {
 }
 
 func TestNextImpl_Await(t *testing.T) {
-	next := Exec(func() interface{} {
+	next := Async(func() interface{} {
 		return doneAsync()
 	})
 	result := next.Await()
@@ -23,7 +23,7 @@ func TestNextImpl_Await(t *testing.T) {
 
 func TestNextImpl_AwaitWithContext(t *testing.T) {
 	ctx := context.Background()
-	next := Exec(func() interface{} {
+	next := Async(func() interface{} {
 		return doneAsync()
 	})
 	result := next.AwaitWithContext(ctx)

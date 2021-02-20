@@ -20,20 +20,20 @@ package async
 
 import "context"
 
-type nextImpl struct {
+type next struct {
 	await func(ctx context.Context) interface{}
 }
 
-func (n nextImpl) Await() interface{} {
+func (n next) Await() interface{} {
 	return n.await(context.Background())
 }
 
-func (n nextImpl) AwaitWithContext(ctx context.Context) interface{} {
+func (n next) AwaitWithContext(ctx context.Context) interface{} {
 	return n.await(ctx)
 }
 
 // Exec executes the async function
-func Exec(f func() interface{}) nextImpl {
+func Async(f func() interface{}) next {
 	var result interface{}
 	// c is going to be used to catch only the signal when the channel is closed.
 	c := make(chan struct{})
@@ -41,7 +41,7 @@ func Exec(f func() interface{}) nextImpl {
 		defer close(c)
 		result = f()
 	}()
-	return nextImpl{
+	return next{
 		await: func(ctx context.Context) interface{} {
 			select {
 			case <-ctx.Done():
