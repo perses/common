@@ -183,6 +183,7 @@ func waitAll(timeout time.Duration, taskRunners []TaskRunner) {
 	waitGroup.Add(len(taskRunners))
 	for _, runner := range taskRunners {
 		go func(r TaskRunner, t time.Duration) {
+			defer waitGroup.Done()
 			timeoutTicker := time.NewTicker(t)
 			defer timeoutTicker.Stop()
 			select {
