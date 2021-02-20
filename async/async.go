@@ -1,4 +1,6 @@
-// Package async provide an implementation of the pattern Async/Await you can find in Javascript
+// Package async provide different kind of interface and implementation to manipulate a bit more safely the go routing.
+//
+// First things  provided by this package is an implementation of the pattern Async/Await you can find in Javascript
 // It should be used when you need to run multiple asynchronous task and wait for each of them to finish.
 // Example:
 //  func doneAsync() int {
@@ -8,7 +10,7 @@
 //	}
 //
 //  func synchronousTask() {
-//  	next := async.Exec(func() interface{} {
+//  	next := async.Async(func() interface{} {
 //			return doneAsync()
 //  	})
 //		// do some other stuff
@@ -16,6 +18,9 @@
 //  	result := next.Await()
 //  	// do something with the result
 //  }
+//
+// It is useful to use this implementation when you want to paralyze quickly some short function like paralyzing multiple HTTP request.
+// You definitely won't use this implementation if you want to create a cron or a long task. Instead you should implement the interface SimpleTask or Task for doing that.
 package async
 
 import "context"
