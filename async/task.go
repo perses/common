@@ -3,6 +3,7 @@ package async
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -31,14 +32,39 @@ type Task interface {
 	Finalize() error
 }
 
-// Runner is interface to use if you want to run a Task/SimpleTask
-type Runner interface {
+// TaskRunner is an interface that defines a wrapper of the task that would help to execute it.
+// Even if this interface is public, you usually don't have to implement it yourself, you just have to implement a Task or a SimpleTask
+type TaskRunner interface {
+	fmt.Stringer
 	Start(ctx context.Context, cancelFunc context.CancelFunc) error
+	// Done returns the channel used to wait for the task job to be finalized
+	Done() <-chan struct{}
 }
 
-// NewCron is returning a Runner that will execute the task periodically
+func NewTaskRunner(task interface{}) (TaskRunner, error) {
+	isSimpleTask := true
+	switch _ := task.(type) {
+	case Task:
+		isSimpleTask = false
+	case SimpleTask:
+	// just here as sanity check
+	default:
+		return nil, fmt.Errorf("task is not a SimpleTask or a Task")
+	}
+	return &runner{
+		interval:     0,
+		task:         task,
+		isSimpleTask: isSimpleTask,
+		done:         make(chan struct{}),
+	}, nil
+}
+
+// NewCron is returning a TaskRunner that will execute the task periodically
 // task can be a SimpleTask or a Task. It returns an error if it's something different
-func NewCron(task interface{}, interval time.Duration) (Runner, error) {
+func NewCron(task interface{}, interval time.Duration) (TaskRunner, error) {
+	if interval <= 0 {
+		return nil, fmt.Errorf("interval cannot be negative or equal to 0 when creating a cron")
+	}
 	isSimpleTask := true
 	switch _ := task.(type) {
 	case Task:
@@ -52,18 +78,31 @@ func NewCron(task interface{}, interval time.Duration) (Runner, error) {
 		interval:     interval,
 		task:         task,
 		isSimpleTask: isSimpleTask,
+		done:         make(chan struct{}),
 	}, nil
 }
 
 type runner struct {
+	TaskRunner
 	// interval is used when the runner is used as a Cron
 	interval time.Duration
 	// task can be a SimpleTask or a Task
 	task         interface{}
 	isSimpleTask bool
+	done         chan struct{}
+}
+
+func (r *runner) Done() <-chan struct{} {
+	return r.done
+}
+
+func (r *runner) String() string {
+	return r.task.(SimpleTask).String()
 }
 
 func (r *runner) Start(ctx context.Context, cancelFunc context.CancelFunc) (err error) {
+	// closing this channel will highlight the caller that the task is done.
+	defer close(r.done)
 	childCtx := ctx
 	if !r.isSimpleTask {
 		// childCancelFunc will be used to stop any sub go-routing using the childCtx when the current task is stopped.
@@ -120,4 +159,39 @@ func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) error 
 			return nil
 		}
 	}
+}
+
+// LaunchRunner is executing in a go-routing the TaskRunner that handles a unique task
+func LaunchRunner(ctx context.Context, cancelFunc context.CancelFunc, t TaskRunner) {
+	go func() {
+		if err := t.Start(ctx, cancelFunc); err != nil {
+			logrus.WithError(err).Errorf("'%s' ended in error", t.String())
+		}
+	}()
+}
+
+// JoinAll is waiting for context to be canceled
+// A task that is ended and should stop the whole application, must have called the master cancelFunc shared by every TaskRunner which will closed the master context.
+func JoinAll(ctx context.Context, timeout time.Duration, taskRunners []TaskRunner) {
+	<-ctx.Done()
+	waitAll(timeout, taskRunners)
+}
+
+func waitAll(timeout time.Duration, taskRunners []TaskRunner) {
+	waitGroup := &sync.WaitGroup{}
+	// set the number of goroutine to wait
+	waitGroup.Add(len(taskRunners))
+	for _, runner := range taskRunners {
+		go func(r TaskRunner, t time.Duration) {
+			timeoutTicker := time.NewTicker(t)
+			defer timeoutTicker.Stop()
+			select {
+			case <-timeoutTicker.C:
+				logrus.Errorf("'%s' took too much time to stop", r.String())
+			case <-r.Done():
+				logrus.Debugf("'%s' has ended", r.String())
+			}
+		}(runner, timeout)
+	}
+	waitGroup.Wait()
 }
