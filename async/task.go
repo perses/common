@@ -43,7 +43,7 @@ type TaskRunner interface {
 
 func NewTaskRunner(task interface{}) (TaskRunner, error) {
 	isSimpleTask := true
-	switch _ := task.(type) {
+	switch task.(type) {
 	case Task:
 		isSimpleTask = false
 	case SimpleTask:
@@ -66,7 +66,7 @@ func NewCron(task interface{}, interval time.Duration) (TaskRunner, error) {
 		return nil, fmt.Errorf("interval cannot be negative or equal to 0 when creating a cron")
 	}
 	isSimpleTask := true
-	switch _ := task.(type) {
+	switch task.(type) {
 	case Task:
 		isSimpleTask = false
 	case SimpleTask:
