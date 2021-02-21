@@ -26,8 +26,8 @@ func (c *EtcdProtocol) Verify() error {
 
 // Connection is a configuration of an etcd host and port
 type Connection struct {
-	Host string `mapstructure:"host"`
-	Port uint64 `mapstructure:"port,omitempty"`
+	Host string `yaml:"host"`
+	Port uint64 `yaml:"port,omitempty"`
 }
 
 func (c *Connection) Verify() error {
@@ -39,11 +39,11 @@ func (c *Connection) Verify() error {
 
 // EtcdConfig defines the way to configure the connection to the etcd database
 type EtcdConfig struct {
-	Connections           []Connection `mapstructure:"connections"`
-	Protocol              EtcdProtocol `mapstructure:"protocol,omitempty"`
-	User                  string       `mapstructure:"user,omitempty"`
-	Password              string       `mapstructure:"password,omitempty"`
-	RequestTimeoutSeconds uint64       `mapstructure:"request_timeout"`
+	Connections           []Connection `yaml:"connections"`
+	Protocol              EtcdProtocol `yaml:"protocol,omitempty"`
+	User                  string       `yaml:"user,omitempty"`
+	Password              string       `yaml:"password,omitempty"`
+	RequestTimeoutSeconds uint64       `yaml:"request_timeout"`
 }
 
 func (c *EtcdConfig) Verify() error {
