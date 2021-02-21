@@ -133,6 +133,7 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 		if err := s.e.Start(s.addr); err != nil {
 			logrus.WithError(err).Info("http server stopped")
 		}
+		logrus.Debug("go routine running the http server has been stopped.")
 	}()
 	// Wait for the end of the task or cancellation
 	select {
@@ -141,20 +142,23 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 		// In our ecosystem, as we are producing each time an HTTP API, if the HTTP api stopped, we want to stop the whole application.
 		// That's why we are calling the parent cancelFunc
 		cancelFunc()
-		return fmt.Errorf("server ended unexpectedly")
+		// as it is possible that the serverCtx.Done() is closed because the main cancelFunc() has been called by another go routing,
+		// we should try to close properly the http server
+		// Note: that's why we don't return any error here.
 	case <-ctx.Done():
 		// Cancellation requested by the parent context
 		logrus.Debug("server cancellation requested")
-		shutdownCtx, shutdownCancelFunc := context.WithTimeout(context.Background(), s.shutdownTimeout)
-		// call shutdownCancelFunc to release the resources in case the task ended before the timeout
-		defer shutdownCancelFunc()
-		if err := s.e.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("server shutdown not properly: %w", err)
-		}
 	}
 	return nil
 }
 
 func (s *server) Finalize() error {
+	logrus.Debug("try to shutdown the http server")
+	shutdownCtx, shutdownCancelFunc := context.WithTimeout(context.Background(), s.shutdownTimeout)
+	// call shutdownCancelFunc to release the resources in case the task ended before the timeout
+	defer shutdownCancelFunc()
+	if err := s.e.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("server shutdown not properly: %w", err)
+	}
 	return nil
 }
