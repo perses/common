@@ -47,7 +47,7 @@ func (s *complexTaskImpl) Execute(ctx context.Context, _ context.CancelFunc) err
 	case <-ctx.Done():
 		return nil
 	default:
-		fmt.Println(fmt.Sprintf("'%s' is doing something", s.String()))
+		fmt.Printf("'%s' is doing something\n", s.String())
 		s.counter++
 		return nil
 	}

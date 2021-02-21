@@ -120,7 +120,6 @@ func (r *runner) Start(ctx context.Context, cancelFunc context.CancelFunc) (err 
 					logrus.WithError(finalErr).Error("error occurred when calling the method Finalize of the task")
 				}
 			}
-			return
 		}()
 
 		// and the initialize method
