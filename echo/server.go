@@ -84,9 +84,7 @@ func (b *Builder) Build() (async.Task, error) {
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
 
 		}
-		for _, mdw := range b.mdws {
-			defaultMiddleware = append(defaultMiddleware, mdw)
-		}
+		b.mdws = append(defaultMiddleware, b.mdws...)
 	}
 	return &server{
 		Task:            nil,
