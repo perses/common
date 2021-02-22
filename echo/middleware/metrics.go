@@ -36,7 +36,7 @@ func NewMetrics(namespace string) (*Metrics, error) {
 			Namespace: namespace,
 			Name:      "http_request_duration_second",
 			Help:      "Http request latencies in second",
-		}, []string{labelCode, labelHandler, labelMethod}),
+		}, []string{labelHandler, labelMethod}),
 	}, nil
 }
 
