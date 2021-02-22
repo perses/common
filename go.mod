@@ -9,5 +9,6 @@ require (
 	github.com/sirupsen/logrus v1.7.0
 	github.com/stretchr/testify v1.7.0
 	go.etcd.io/etcd v0.5.0-alpha.5.0.20201125193152-8a03d2e9614b
+	google.golang.org/grpc v1.26.0
 	gopkg.in/yaml.v2 v2.3.0
 )
