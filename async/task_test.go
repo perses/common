@@ -71,5 +71,5 @@ func TestJoinAll(t *testing.T) {
 	LaunchRunner(ctx, cancel, t1)
 	LaunchRunner(ctx, cancel, t2)
 	JoinAll(ctx, 30*time.Second, []TaskRunner{t1, t2})
-	assert.Equal(t, 2, complexTask.counter)
+	assert.True(t, complexTask.counter >= 2)
 }
