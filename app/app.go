@@ -149,6 +149,12 @@ func (r *Runner) Start() {
 	}
 	logrus.SetLevel(level)
 	logrus.SetReportCaller(logMethodTrace)
+	logrus.SetFormatter(&logrus.TextFormatter{
+		// Useful when you have a TTY attached.
+		// Issue explained here when this field is set to false by default:
+		// https://github.com/sirupsen/logrus/issues/896
+		FullTimestamp: true,
+	})
 	// log the server infos
 	mainHeader()
 	// start to handle the different task
