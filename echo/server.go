@@ -99,11 +99,13 @@ func (b *Builder) Build() (async.Task, error) {
 		}
 		b.mdws = append(defaultMiddleware, b.mdws...)
 	}
+	e := echo.New()
+	e.HideBanner = true
 	return &server{
 		Task:            nil,
 		addr:            b.addr,
 		apis:            b.apis,
-		e:               echo.New(),
+		e:               e,
 		mdws:            b.mdws,
 		shutdownTimeout: 30 * time.Second,
 	}, nil
