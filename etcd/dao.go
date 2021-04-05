@@ -121,7 +121,7 @@ func (d *daoImpl) Query(query Query, slice interface{}) error {
 	//           reflect.Value.Set using unaddressable value
 	// It's because the slice is usually not initialized and doesn't have any memory allocated.
 	// So it's simpler to required a pointer at the beginning.
-	result = result.Elem()
+	sliceElem := result.Elem()
 	typeParameter = typeParameter.Elem()
 
 	if typeParameter.Kind() != reflect.Slice {
@@ -140,7 +140,7 @@ func (d *daoImpl) Query(query Query, slice interface{}) error {
 
 	if len(gr.Kvs) <= 0 {
 		// in case the result is empty, let's initialize the slice just to avoid to return a nil slice
-		result = reflect.MakeSlice(typeParameter, 0, 0)
+		sliceElem = reflect.MakeSlice(typeParameter, 0, 0)
 	}
 
 	for _, kv := range gr.Kvs {
@@ -157,8 +157,10 @@ func (d *daoImpl) Query(query Query, slice interface{}) error {
 		if err := decode(kv.Value, &obj); err != nil {
 			return fmt.Errorf("error decoding the value associated with the key '%s': %w", kv.Key, err)
 		}
-		result.Set(reflect.Append(result, value))
+		sliceElem.Set(reflect.Append(sliceElem, value))
 	}
+	// at the end reset the element of the slice to ensure we didn't disconnect the link between the pointer to the slice and the actual slice
+	result.Elem().Set(sliceElem)
 	return nil
 }
 
