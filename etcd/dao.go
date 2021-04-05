@@ -138,6 +138,11 @@ func (d *daoImpl) Query(query Query, slice interface{}) error {
 		return err
 	}
 
+	if len(gr.Kvs) <= 0 {
+		// in case the result is empty, let's initialize the slice just to avoid to return a nil slice
+		result = reflect.MakeSlice(typeParameter, 0, 0)
+	}
+
 	for _, kv := range gr.Kvs {
 		// first create a pointer with the accurate type
 		var value reflect.Value
