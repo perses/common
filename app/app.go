@@ -36,6 +36,7 @@ package app
 import (
 	"context"
 	"flag"
+	"fmt"
 	"syscall"
 	"time"
 
@@ -88,6 +89,9 @@ type Runner struct {
 	// taskRunners is the different runner to execute
 	taskRunners   []async.TaskRunner
 	serverBuilder *echo.Builder
+	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
+	// If set, then the main header won't be printed.
+	banner string
 }
 
 func NewRunner() *Runner {
@@ -106,6 +110,11 @@ func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 
 func (r *Runner) SetCronPeriod(period time.Duration) *Runner {
 	r.cronPeriod = period
+	return r
+}
+
+func (r *Runner) SetBanner(banner string) *Runner {
+	r.banner = banner
 	return r
 }
 
@@ -155,8 +164,12 @@ func (r *Runner) Start() {
 		// https://github.com/sirupsen/logrus/issues/896
 		FullTimestamp: true,
 	})
-	// log the server infos
-	mainHeader()
+	// log the server infos or print the banner
+	if len(r.banner) > 0 {
+		fmt.Printf(r.banner, Version)
+	} else {
+		mainHeader()
+	}
 	// start to handle the different task
 
 	// create the http server if defined
