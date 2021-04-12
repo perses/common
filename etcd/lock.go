@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"go.etcd.io/etcd/clientv3"
-	"go.etcd.io/etcd/clientv3/concurrency"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
 // KeyLocker is the interface that will provide methods to lock and unlock for a specific key
