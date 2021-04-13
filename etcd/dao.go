@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/sirupsen/logrus"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -46,6 +48,7 @@ type DAO interface {
 	Delete(key string) error
 	Watch(ctx context.Context, query Query) (clientv3.WatchChan, error)
 	RequestLocker() KeyLocker
+	HealthCheck() bool
 }
 
 // NewDAO creates a new instance of DAO interface
@@ -106,7 +109,8 @@ func (d *daoImpl) Get(key string, entity interface{}) error {
 	return decode(gr.Kvs[0].Value, entity)
 }
 
-// returns the list of values that starts with a certain prefix
+// Query returns the list of values that starts with a certain prefix
+// slice must be a pointer to the slice. It will contain the result of the query if no errors are detected
 func (d *daoImpl) Query(query Query, slice interface{}) error {
 	typeParameter := reflect.TypeOf(slice)
 	result := reflect.ValueOf(slice)
@@ -202,4 +206,23 @@ func (d *daoImpl) Watch(ctx context.Context, query Query) (clientv3.WatchChan, e
 
 func (d *daoImpl) RequestLocker() KeyLocker {
 	return newKeyLocker(d.requestTimeout, d.client)
+}
+
+// HealthCheck pings etcd and return false if there is an issue
+// It returns true if everything goes right.
+func (d *daoImpl) HealthCheck() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), d.requestTimeout)
+	defer cancel()
+	alarmList, err := d.client.AlarmList(ctx)
+	if err != nil {
+		logrus.WithError(err).Error("an error occurred while trying to ping etcd")
+		return false
+	}
+	for _, alarm := range alarmList.Alarms {
+		if alarm.GetAlarm() != etcdserverpb.AlarmType_NONE {
+			logrus.Errorf("Alarm raised by etcd: alarm %s", alarm.GetAlarm().String())
+			return false
+		}
+	}
+	return true
 }
