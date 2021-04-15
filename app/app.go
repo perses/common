@@ -72,7 +72,7 @@ func mainHeader() {
 func init() {
 	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
 	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
-	flag.StringVar(&addr, "listen-address", ":8080", "The address to listen on for HTTP requests")
+	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
 }
 
 type Runner struct {

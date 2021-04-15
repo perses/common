@@ -14,10 +14,21 @@
 package echo
 
 import (
+	"flag"
+
 	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var (
+	// http path for telemetry exposition
+	telemetryPath string
+)
+
+func init() {
+	flag.StringVar(&telemetryPath, "web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+}
 
 func NewMetricsAPI(disableCompression bool) Register {
 	return &metrics{disableCompression: disableCompression}
@@ -35,7 +46,7 @@ type metrics struct {
 }
 
 func (m *metrics) RegisterRoute(e *echo.Echo) {
-	e.GET("/metrics", echo.WrapHandler(
+	e.GET(telemetryPath, echo.WrapHandler(
 		promhttp.InstrumentMetricHandler(
 			prometheus.DefaultRegisterer, promhttp.HandlerFor(
 				prometheus.DefaultGatherer, promhttp.HandlerOpts{
