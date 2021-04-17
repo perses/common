@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The package app is exposing a struct to handle the building and the managing of the different task coming from the package async.
+// Package app is exposing a struct to handle the building and the managing of the different task coming from the package async.
 // This should be used in the main package only.
 //
 // A quite straightforward usage of this package is when you are implementing an HTTP API and want to expose it.
@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/perses/common/async"
+	"github.com/perses/common/async/taskhelper"
 	"github.com/perses/common/echo"
 	"github.com/sirupsen/logrus"
 )
@@ -86,8 +87,8 @@ type Runner struct {
 	// tasks is the different task that are executed asynchronously only once time.
 	// for each task a async.TaskRunner will be created
 	tasks []interface{}
-	// taskRunners is the different runner to execute
-	taskRunners   []async.TaskRunner
+	// helpers is the different helper to execute
+	helpers       []taskhelper.Helper
 	serverBuilder *echo.Builder
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
@@ -133,8 +134,8 @@ func (r *Runner) WithCronTasks(t ...interface{}) *Runner {
 	return r
 }
 
-func (r *Runner) WithTaskRunners(t ...async.TaskRunner) *Runner {
-	r.taskRunners = append(r.taskRunners, t...)
+func (r *Runner) WithTaskHelpers(t ...taskhelper.Helper) *Runner {
+	r.helpers = append(r.helpers, t...)
 	return r
 }
 
@@ -186,18 +187,18 @@ func (r *Runner) Start() {
 	r.tasks = append(r.tasks, signalsListener)
 
 	for _, cron := range r.cronTasks {
-		if taskRunner, err := async.NewCron(cron, r.cronPeriod); err != nil {
+		if taskRunner, err := taskhelper.NewCron(cron, r.cronPeriod); err != nil {
 			logrus.WithError(err).Fatalf("unable to create a taskRunner to handle a cron set")
 		} else {
-			r.taskRunners = append(r.taskRunners, taskRunner)
+			r.helpers = append(r.helpers, taskRunner)
 		}
 	}
 
 	for _, task := range r.tasks {
-		if taskRunner, err := async.NewTaskRunner(task); err != nil {
+		if taskRunner, err := taskhelper.New(task); err != nil {
 			logrus.WithError(err).Fatalf("unable to create a taskRunner to handle a task set")
 		} else {
-			r.taskRunners = append(r.taskRunners, taskRunner)
+			r.helpers = append(r.helpers, taskRunner)
 		}
 	}
 
@@ -206,9 +207,9 @@ func (r *Runner) Start() {
 	// in any case call the cancel method to release any possible resources.
 	defer cancel()
 	// launch every runners
-	for _, runner := range r.taskRunners {
-		async.LaunchRunner(ctx, cancel, runner)
+	for _, runner := range r.helpers {
+		taskhelper.Run(ctx, cancel, runner)
 	}
 	// Wait for context to be canceled or tasks to be ended and wait for graceful stop
-	async.JoinAll(ctx, r.waitTimeout, r.taskRunners)
+	taskhelper.JoinAll(ctx, r.waitTimeout, r.helpers)
 }
