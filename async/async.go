@@ -55,7 +55,7 @@ func (n *next) AwaitWithContext(ctx context.Context) interface{} {
 	return n.await(ctx)
 }
 
-// Exec executes the async function
+// Async executes the asynchronous function
 func Async(f func() interface{}) Future {
 	var result interface{}
 	// c is going to be used to catch only the signal when the channel is closed.

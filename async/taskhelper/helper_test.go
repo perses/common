@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package async
+package taskhelper
 
 import (
 	"context"
@@ -19,11 +19,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/perses/common/async"
 	"github.com/stretchr/testify/assert"
 )
 
 type simpleTaskImpl struct {
-	SimpleTask
+	async.SimpleTask
 }
 
 func (s *simpleTaskImpl) String() string {
@@ -44,7 +45,7 @@ func (s *simpleTaskImpl) Execute(ctx context.Context, cancelFunc context.CancelF
 
 type complexTaskImpl struct {
 	counter int
-	Task
+	async.Task
 }
 
 func (s *complexTaskImpl) String() string {
@@ -74,15 +75,15 @@ func (s *complexTaskImpl) Finalize() error {
 // * To validate that when the cancelFunc() is called, it is correctly propagated across the different go-routing and properly considered
 // * To validate that the JoinAll is effectively waiting for the end of the every given task
 func TestJoinAll(t *testing.T) {
-	t1, err := NewTaskRunner(&simpleTaskImpl{})
+	t1, err := New(&simpleTaskImpl{})
 	assert.NoError(t, err)
 	complexTask := &complexTaskImpl{}
 	t2, err := NewCron(complexTask, 5*time.Second)
 	assert.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	// start all runner
-	LaunchRunner(ctx, cancel, t1)
-	LaunchRunner(ctx, cancel, t2)
-	JoinAll(ctx, 30*time.Second, []TaskRunner{t1, t2})
+	Run(ctx, cancel, t1)
+	Run(ctx, cancel, t2)
+	JoinAll(ctx, 30*time.Second, []Helper{t1, t2})
 	assert.True(t, complexTask.counter >= 2)
 }
