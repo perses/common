@@ -76,14 +76,16 @@ func init() {
 	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
 }
 
+type cron struct {
+	task     interface{}
+	duration time.Duration
+}
+
 type Runner struct {
 	// waitTimeout is the amount of time to wait before killing the application once it received a cancellation order.
 	waitTimeout time.Duration
-	// cronPeriod is the amount of time to wait before the next execution of a task
-	cronPeriod time.Duration
-	// cronTasks is the different task that are executed periodically with the same frequency.
-	// Note: for each cronTask a async.TaskRunner will be created.
-	cronTasks []interface{}
+	// cronTasks is the different task that are executed periodically.
+	cronTasks []cron
 	// tasks is the different task that are executed asynchronously only once time.
 	// for each task a async.TaskRunner will be created
 	tasks []interface{}
@@ -98,10 +100,10 @@ type Runner struct {
 func NewRunner() *Runner {
 	return &Runner{
 		waitTimeout: time.Second * 30,
-		cronPeriod:  time.Minute * 5,
 	}
 }
 
+// SetTimeout is setting the time to wait before killing the application once it received a cancellation order.
 func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 	if timeout > 0 {
 		r.waitTimeout = timeout
@@ -109,28 +111,28 @@ func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 	return r
 }
 
-func (r *Runner) SetCronPeriod(period time.Duration) *Runner {
-	r.cronPeriod = period
-	return r
-}
-
+// SetBanner is setting  a string (ideally the logo of the project) that would be printed when the runner is started
+// If set, then the main header won't be printed. The main header is printing the Version, the BuildTime and the Commit.
 func (r *Runner) SetBanner(banner string) *Runner {
 	r.banner = banner
 	return r
 }
 
 // WithTasks is the way to add different task that will be executed asynchronously. If a task ended with no error, it won't necessarily stopped the whole application.
-// It will mainly depend of how the task is managing the context pass in parameter.
+// It will mainly depend of how the task is managing the context passed in parameter.
 func (r *Runner) WithTasks(t ...interface{}) *Runner {
 	r.tasks = append(r.tasks, t...)
 	return r
 }
 
-// WithCronTasks is the way to add different task that will be executed periodically at the same frequency.
-// If you want to run different task with different period of time, you probably create by your own an async.TaskRunner using the method async.NewCron.
-// In that case you certainly would prefer to use the method WithTaskRunners instead
-func (r *Runner) WithCronTasks(t ...interface{}) *Runner {
-	r.cronTasks = append(r.cronTasks, t...)
+// WithCronTasks is the way to add different task that will be executed periodically at the frequency defined with the duration.
+func (r *Runner) WithCronTasks(duration time.Duration, t ...interface{}) *Runner {
+	for _, ts := range t {
+		r.cronTasks = append(r.cronTasks, cron{
+			task:     ts,
+			duration: duration,
+		})
+	}
 	return r
 }
 
@@ -186,19 +188,19 @@ func (r *Runner) Start() {
 	signalsListener := async.NewSignalListener(syscall.SIGINT, syscall.SIGTERM)
 	r.tasks = append(r.tasks, signalsListener)
 
-	for _, cron := range r.cronTasks {
-		if taskRunner, err := taskhelper.NewCron(cron, r.cronPeriod); err != nil {
+	for _, c := range r.cronTasks {
+		if taskHelper, err := taskhelper.NewCron(c.task, c.duration); err != nil {
 			logrus.WithError(err).Fatalf("unable to create a taskRunner to handle a cron set")
 		} else {
-			r.helpers = append(r.helpers, taskRunner)
+			r.helpers = append(r.helpers, taskHelper)
 		}
 	}
 
 	for _, task := range r.tasks {
-		if taskRunner, err := taskhelper.New(task); err != nil {
+		if taskHelper, err := taskhelper.New(task); err != nil {
 			logrus.WithError(err).Fatalf("unable to create a taskRunner to handle a task set")
 		} else {
-			r.helpers = append(r.helpers, taskRunner)
+			r.helpers = append(r.helpers, taskHelper)
 		}
 	}
 
