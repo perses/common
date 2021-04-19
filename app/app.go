@@ -95,12 +95,14 @@ type Runner struct {
 	serverBuilder *echo.Builder
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
-	banner string
+	banner           string
+	bannerParameters []string
 }
 
 func NewRunner() *Runner {
 	return &Runner{
-		waitTimeout: time.Second * 30,
+		waitTimeout:      time.Second * 30,
+		bannerParameters: []string{Version, Commit, BuildTime},
 	}
 }
 
@@ -173,36 +175,7 @@ func (r *Runner) Start() {
 	// log the server infos or print the banner
 	r.printBannerOrMainHeader()
 	// start to handle the different task
-
-	// create the http server if defined
-	if r.serverBuilder != nil {
-		if serverTask, err := r.serverBuilder.Build(); err != nil {
-			logrus.WithError(err).Fatal("An error occurred while creating the server task")
-		} else {
-			r.tasks = append(r.tasks, serverTask)
-		}
-	}
-
-	// create the signal listener and add it to all others tasks
-	signalsListener := async.NewSignalListener(syscall.SIGINT, syscall.SIGTERM)
-	r.tasks = append(r.tasks, signalsListener)
-
-	for _, c := range r.cronTasks {
-		if taskHelper, err := taskhelper.NewCron(c.task, c.duration); err != nil {
-			logrus.WithError(err).Fatalf("unable to create a taskRunner to handle a cron set")
-		} else {
-			r.helpers = append(r.helpers, taskHelper)
-		}
-	}
-
-	for _, task := range r.tasks {
-		if taskHelper, err := taskhelper.New(task); err != nil {
-			logrus.WithError(err).Fatalf("unable to create a taskRunner to handle a task set")
-		} else {
-			r.helpers = append(r.helpers, taskHelper)
-		}
-	}
-
+	r.buildTask()
 	// create the master context that must be shared by every task
 	ctx, cancel := context.WithCancel(context.Background())
 	// in any case call the cancel method to release any possible resources.
@@ -220,16 +193,40 @@ func (r *Runner) printBannerOrMainHeader() {
 		mainHeader()
 		return
 	}
-	var params []string
-	nbParam := strings.Count(r.banner, "%s")
-	if nbParam >= 1 {
-		params = append(params, Version)
+	nbParams := strings.Count(r.banner, "%s")
+	if nbParams > cap(r.bannerParameters) {
+		// this verification is to avoid a panic when we truncate the slice bannerParameters with a higher capacity than the one allocated
+		nbParams = cap(r.bannerParameters)
 	}
-	if nbParam >= 2 {
-		params = append(params, Commit)
+	fmt.Printf(r.banner, r.bannerParameters[:nbParams])
+}
+
+func (r *Runner) buildTask() {
+	// create the http server if defined
+	if r.serverBuilder != nil {
+		if serverTask, err := r.serverBuilder.Build(); err != nil {
+			logrus.WithError(err).Fatal("An error occurred while creating the server task")
+		} else {
+			r.tasks = append(r.tasks, serverTask)
+		}
 	}
-	if nbParam >= 3 {
-		params = append(params, BuildTime)
+	// create the signal listener and add it to all others tasks
+	signalsListener := async.NewSignalListener(syscall.SIGINT, syscall.SIGTERM)
+	r.tasks = append(r.tasks, signalsListener)
+
+	for _, c := range r.cronTasks {
+		if taskHelper, err := taskhelper.NewCron(c.task, c.duration); err != nil {
+			logrus.WithError(err).Fatal("unable to create the taskhelper.Helper to handle a cron set")
+		} else {
+			r.helpers = append(r.helpers, taskHelper)
+		}
 	}
-	fmt.Printf(r.banner, params)
+
+	for _, task := range r.tasks {
+		if taskHelper, err := taskhelper.New(task); err != nil {
+			logrus.WithError(err).Fatal("unable to create a taskhelper.Helper to handle a task set")
+		} else {
+			r.helpers = append(r.helpers, taskHelper)
+		}
+	}
 }
