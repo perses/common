@@ -106,6 +106,8 @@ func verifyRec(conf reflect.Value) error {
 		if err := checkPointer(ptr); err != nil {
 			return err
 		}
+		// in case the method Verify() is setting some parameter in the struct, we have to save these changes
+		v.Set(ptr.Elem())
 	} else {
 		if err := checkPointer(v); err != nil {
 			return err
