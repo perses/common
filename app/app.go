@@ -37,6 +37,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,7 +113,9 @@ func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 }
 
 // SetBanner is setting  a string (ideally the logo of the project) that would be printed when the runner is started
-// If set, then the main header won't be printed. The main header is printing the Version, the BuildTime and the Commit.
+// Additionally you can also print the Version, the BuildTime and the Commit.
+// You just have to add '%s' in your banner where you want to print each information (one '%s' per additional information).
+// If set, then the main header won't be printed. The main header is printing the Version, the Commit and the BuildTime.
 func (r *Runner) SetBanner(banner string) *Runner {
 	r.banner = banner
 	return r
@@ -168,11 +171,7 @@ func (r *Runner) Start() {
 		FullTimestamp: true,
 	})
 	// log the server infos or print the banner
-	if len(r.banner) > 0 {
-		fmt.Printf(r.banner, Version)
-	} else {
-		mainHeader()
-	}
+	r.printBannerOrMainHeader()
 	// start to handle the different task
 
 	// create the http server if defined
@@ -214,4 +213,23 @@ func (r *Runner) Start() {
 	}
 	// Wait for context to be canceled or tasks to be ended and wait for graceful stop
 	taskhelper.JoinAll(ctx, r.waitTimeout, r.helpers)
+}
+
+func (r *Runner) printBannerOrMainHeader() {
+	if len(r.banner) == 0 {
+		mainHeader()
+		return
+	}
+	var params []string
+	nbParam := strings.Count(r.banner, "%s")
+	if nbParam >= 1 {
+		params = append(params, Version)
+	}
+	if nbParam >= 2 {
+		params = append(params, Commit)
+	}
+	if nbParam >= 3 {
+		params = append(params, BuildTime)
+	}
+	fmt.Printf(r.banner, params)
 }
