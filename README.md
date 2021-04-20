@@ -1,6 +1,6 @@
 Common
 ======
-
+[![CircleCI](https://circleci.com/gh/perses/common.svg?style=shield)](https://circleci.com/gh/perses/common)
 [![Godoc](https://godoc.org/github.com/perses/common?status.svg)](https://pkg.go.dev/github.com/perses/common)
 
 This repository contains GO libraries used in the different component of Perses.
