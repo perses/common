@@ -96,13 +96,13 @@ type Runner struct {
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
 	banner           string
-	bannerParameters []string
+	bannerParameters []interface{}
 }
 
 func NewRunner() *Runner {
 	return &Runner{
 		waitTimeout:      time.Second * 30,
-		bannerParameters: []string{Version, Commit, BuildTime},
+		bannerParameters: []interface{}{Version, Commit, BuildTime},
 	}
 }
 
@@ -198,7 +198,7 @@ func (r *Runner) printBannerOrMainHeader() {
 		// this verification is to avoid a panic when we truncate the slice bannerParameters with a higher capacity than the one allocated
 		nbParams = cap(r.bannerParameters)
 	}
-	fmt.Printf(r.banner, r.bannerParameters[:nbParams])
+	fmt.Printf(r.banner, r.bannerParameters[:nbParams]...)
 }
 
 func (r *Runner) buildTask() {
