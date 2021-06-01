@@ -15,6 +15,7 @@ package echo
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"time"
 
@@ -26,6 +27,12 @@ import (
 
 	persesMiddleware "github.com/perses/common/echo/middleware"
 )
+
+var hidePort bool
+
+func init() {
+	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
+}
 
 type Register interface {
 	RegisterRoute(e *echo.Echo)
@@ -101,6 +108,7 @@ func (b *Builder) Build() (async.Task, error) {
 	}
 	e := echo.New()
 	e.HideBanner = true
+	e.HidePort = hidePort
 	return &server{
 		Task:            nil,
 		addr:            b.addr,

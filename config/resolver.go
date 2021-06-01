@@ -11,6 +11,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package config provides a single way to manage the configuration of your application.
+// The configuration can be a yaml file and/or a list of environment variable.
+// To set the config using the environment, this package is using the package github.com/nexucis/lamenv,
+// which is able to determinate what is the environment variable that matched the different attribute tof the struct.
+// By default it is based on the yaml tag provided.
+//
+// The main entry point of this package is the struct Resolver.
+// This struct will allow you to set the path to your config file if you have one and to give the prefix of all of your environment variable.
+// Note:
+//   1. A good practice is to prefix your environment variable by the name of your application.
+//   2. The config file is not mandatory, you can manage all you configuration using the environment variable.
+//   3. The config by environment is always overriding the config by file.
+//
+// The Resolver at the end returns an object that implements the interface Validator.
+// Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
+// The object returned by the Resolver will loop other different structs that are parts of the config and execute the method Verify if implemented.
+//
+// Example:
+//   import (
+//           "fmt"
+//
+//           "github.com/perses/common/config"
+//   )
+//
+//    type Config struct {
+//	    Etcd *EtcdConfig `yaml:"etcd"`
+//    }
+//
+//    func (c *Config) Verify() error {
+//      if c.EtcdConfig == nil {
+//        return fmt.Errorf("etcd config cannot be empty")
+//      }
+//    }
+//
+//    func Resolve(configFile string) (Config, error) {
+//	    c := Config{}
+//	    return c, config.NewResolver().
+//		  SetConfigFile(configFile).
+//		  SetEnvPrefix("PERSES").
+//		  Resolve(&c).
+//		  Verify()
+//    }
 package config
 
 import (
@@ -64,6 +106,8 @@ func verifyRec(conf reflect.Value) error {
 		if err := checkPointer(ptr); err != nil {
 			return err
 		}
+		// in case the method Verify() is setting some parameter in the struct, we have to save these changes
+		v.Set(ptr.Elem())
 	} else {
 		if err := checkPointer(v); err != nil {
 			return err
@@ -124,7 +168,7 @@ func (c *configResolver) SetConfigFile(filename string) Resolver {
 func (c *configResolver) Resolve(config interface{}) Validator {
 	err := c.readFromFile(config)
 	if err == nil {
-		err = lamenv.New().Unmarshal(config, []string{c.prefix})
+		err = lamenv.Unmarshal(config, []string{c.prefix})
 	}
 	return &validatorImpl{
 		err:    err,
