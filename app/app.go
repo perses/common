@@ -44,16 +44,11 @@ import (
 	"github.com/perses/common/async"
 	"github.com/perses/common/async/taskhelper"
 	"github.com/perses/common/echo"
+	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
 )
 
 var (
-	// BuildTime is the date when the application has been built.
-	BuildTime string
-	// Version is the current version of the application
-	Version string
-	// Commit is the ID of the commit when the application has been built
-	Commit string
 	// level of the log for logrus only
 	logLevel string
 	// includes the calling method as a field in the log
@@ -65,9 +60,9 @@ var (
 // mainHeader logs the start time and various build information.
 func mainHeader() {
 	logrus.Infof("Program started at %s", time.Now().UTC().String())
-	logrus.Infof("Build time: %s", BuildTime)
-	logrus.Infof("Version: %s", Version)
-	logrus.Infof("Commit: %s", Commit)
+	logrus.Infof("Build time: %s", version.BuildDate)
+	logrus.Infof("Version: %s", version.Version)
+	logrus.Infof("Commit: %s", version.Revision)
 	logrus.Info("------------")
 }
 
@@ -102,7 +97,7 @@ type Runner struct {
 func NewRunner() *Runner {
 	return &Runner{
 		waitTimeout:      time.Second * 30,
-		bannerParameters: []interface{}{Version, Commit, BuildTime},
+		bannerParameters: []interface{}{version.Version, version.Revision, version.BuildDate},
 	}
 }
 

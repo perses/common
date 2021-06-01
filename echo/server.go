@@ -23,6 +23,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/perses/common/async"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
 
 	persesMiddleware "github.com/perses/common/echo/middleware"
@@ -101,6 +102,7 @@ func (b *Builder) Build() (async.Task, error) {
 				return nil, err
 			}
 			prometheus.MustRegister(metricMiddleware)
+			prometheus.MustRegister(version.NewCollector(b.metricNamespace))
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
 
 		}
