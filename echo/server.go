@@ -17,6 +17,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -45,11 +47,13 @@ type Builder struct {
 	apis               []Register
 	overrideMiddleware bool
 	mdws               []echo.MiddlewareFunc
+	activatePprof      bool
 }
 
 func NewBuilder(addr string) *Builder {
 	return &Builder{
-		addr: addr,
+		addr:          addr,
+		activatePprof: true,
 	}
 }
 
@@ -76,6 +80,11 @@ func (b *Builder) MetricNamespace(namespace string) *Builder {
 
 func (b *Builder) APIRegistration(api Register) *Builder {
 	b.apis = append(b.apis, api)
+	return b
+}
+
+func (b *Builder) ActivatePprof(activate bool) *Builder {
+	b.activatePprof = activate
 	return b
 }
 
@@ -118,6 +127,7 @@ func (b *Builder) Build() (async.Task, error) {
 		e:               e,
 		mdws:            b.mdws,
 		shutdownTimeout: 30 * time.Second,
+		activatePprof:   b.activatePprof,
 	}, nil
 }
 
@@ -128,6 +138,7 @@ type server struct {
 	e               *echo.Echo
 	mdws            []echo.MiddlewareFunc
 	shutdownTimeout time.Duration
+	activatePprof   bool
 }
 
 func (s *server) String() string {
@@ -145,6 +156,7 @@ func (s *server) Initialize() error {
 	for _, a := range s.apis {
 		a.RegisterRoute(s.e)
 	}
+	s.registerPprof()
 	return nil
 }
 
@@ -184,4 +196,10 @@ func (s *server) Finalize() error {
 		return fmt.Errorf("server shutdown not properly: %w", err)
 	}
 	return nil
+}
+
+func (s *server) registerPprof() {
+	if s.activatePprof {
+		s.e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
+	}
 }
