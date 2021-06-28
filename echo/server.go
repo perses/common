@@ -18,7 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -200,6 +200,7 @@ func (s *server) Finalize() error {
 
 func (s *server) registerPprof() {
 	if s.activatePprof {
+		s.e.GET("/debug/pprof", echo.WrapHandler(http.HandlerFunc(pprof.Index)))
 		s.e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
 	}
 }
