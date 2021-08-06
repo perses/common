@@ -11,6 +11,45 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package echo is exposing a struct to handle the building and the management of the different tasks coming from the async package.
+// This should be used in the main package only.
+// This package provides a way to build an echo server easily (see https://echo.labstack.com), with a prometheus metrics endpoint and that relies on logrus for logging (see https://github.com/sirupsen/logrus).
+//
+// Please favour the usage of [app](../app) package to run an echo web server.
+//
+// Features
+//
+// - Build and run an echo server with a "/metrics" endpoint.
+//
+// - Register an API.
+//
+// - Register a Middleware.
+//
+// Usage
+//
+// Instantiate a simple server task :
+//
+//  package my_package
+//
+//  import (
+//      "context"
+//
+//      "github.com/perses/common/echo"
+//  )
+//
+//  const (
+//      // The address on which the server is listening.
+//      addr = ":8080"
+//      metricNamespace = "my_project"
+//  )
+//
+//  func main() {
+//      serverTask, err := echo.NewBuilder(addr).
+//              APIRegistration(echo.NewMetricsAPI(true)).
+//              MetricNamespace(metricNamespace).
+//              Build()
+//  }
+//
 package echo
 
 import (
