@@ -3,16 +3,16 @@ Common
 [![CircleCI](https://circleci.com/gh/perses/common.svg?style=shield)](https://circleci.com/gh/perses/common)
 [![Godoc](https://godoc.org/github.com/perses/common?status.svg)](https://pkg.go.dev/github.com/perses/common)
 
-This repository contains GO libraries used in the different component of Perses.
+This repository contains GO libraries used in the different components of Perses.
 
-This set of library aims to provide a way:
+This set of libraries aims to provide a way:
 
 * to handle processes management with graceful stop
 * to define an HTTP API
 * to handle the configuration
 
 Note: These libraries are mainly designed to ease the development of Perses. As it is still a beta, breaking change can
-happen between two release. But, as there is nothing really specific to Perses itself, you can use it at your own
+happen between two releases. But as there is nothing really specific to Perses itself, you can use it at your own
 risk.
 
 Here's a short description about what each package provides:
@@ -21,7 +21,7 @@ Here's a short description about what each package provides:
 * **async**: provides different ways to manage an asynchronous job
 * **config**: provides a config resolver that helps to manage the configuration. It also provides a default
   configuration for etcd
-* **echo**: provides a builder that helps to manage middleware, api and help to start a server with a context
+* **echo**: provides a builder that helps to manage middlewares, apis and help to start a server with a context
   management.
 * **etcd**: provides a dao that wraps the etcd client to simplify a bit how to use it
-* **slices**: provides utils method to manipulate the slice (mostly slice of string)
+* **slices**: provides utility methods to manipulate slices (mostly slices of string)

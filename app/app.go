@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package app is exposing a struct to handle the building and the managing of the different task coming from the package async.
+// Package app is exposing a struct to handle the building and the management of the different tasks coming from the package async.
 // This should be used in the main package only.
 //
 // A quite straightforward usage of this package is when you are implementing an HTTP API and want to expose it.
@@ -30,6 +30,13 @@
 //     // start the application
 //     runner.Start()
 //   }
+//
+// You can also add custom tasks to the runner using WithTasks :
+//  // Run all the tasks
+//  runner := app.NewRunner().
+//      WithTasks(myTask1, myTask2).
+//      WithDefaultServerTask(prometheusNamespace)
+//  runner.Start()
 //
 package app
 
@@ -109,7 +116,7 @@ func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 	return r
 }
 
-// SetBanner is setting  a string (ideally the logo of the project) that would be printed when the runner is started
+// SetBanner is setting  a string (ideally the logo of the project) that would be printed when the runner is started.
 // Additionally you can also print the Version, the BuildTime and the Commit.
 // You just have to add '%s' in your banner where you want to print each information (one '%s' per additional information).
 // If set, then the main header won't be printed. The main header is printing the Version, the Commit and the BuildTime.
@@ -118,14 +125,14 @@ func (r *Runner) SetBanner(banner string) *Runner {
 	return r
 }
 
-// WithTasks is the way to add different task that will be executed asynchronously. If a task ended with no error, it won't necessarily stopped the whole application.
-// It will mainly depend of how the task is managing the context passed in parameter.
+// WithTasks is the way to add different tasks that will be executed asynchronously. If a task ended with no error, it won't necessarily stop the whole application.
+// It will mainly depend on how the task is managing the context passed in parameter.
 func (r *Runner) WithTasks(t ...interface{}) *Runner {
 	r.tasks = append(r.tasks, t...)
 	return r
 }
 
-// WithCronTasks is the way to add different task that will be executed periodically at the frequency defined with the duration.
+// WithCronTasks is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
 func (r *Runner) WithCronTasks(duration time.Duration, t ...interface{}) *Runner {
 	for _, ts := range t {
 		r.cronTasks = append(r.cronTasks, cron{

@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package etcd provides a simple DAO to ease the interaction with ETCD. It also provides a lock system.
 package etcd
 
 import (
