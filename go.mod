@@ -5,7 +5,7 @@ go 1.15
 require (
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/labstack/echo/v4 v4.6.1
+	github.com/labstack/echo/v4 v4.6.2
 	github.com/nexucis/lamenv v0.2.0
 	github.com/prometheus/client_golang v1.11.0
 	github.com/prometheus/common v0.32.1
