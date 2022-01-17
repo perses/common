@@ -15,6 +15,7 @@ package middleware
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -73,16 +74,29 @@ func (m *Metrics) ProcessHTTPRequest(next echo.HandlerFunc) echo.HandlerFunc {
 			ctx.Error(err)
 		}
 		elapsedTime := time.Since(start).Seconds()
+		method := ctx.Request().Method
+		if method != http.MethodPost &&
+			method != http.MethodGet &&
+			method != http.MethodHead &&
+			method != http.MethodPatch &&
+			method != http.MethodPut &&
+			method != http.MethodConnect &&
+			method != http.MethodDelete &&
+			method != http.MethodOptions &&
+			method != http.MethodTrace {
+			logrus.Tracef("weird http method used %q", method)
+			method = "not_standard"
+		}
 
 		status := strconv.Itoa(ctx.Response().Status)
-		counter, err := m.totalHTTPRequest.GetMetricWith(prometheus.Labels{labelCode: status, labelHandler: ctx.Path(), labelMethod: ctx.Request().Method})
+		counter, err := m.totalHTTPRequest.GetMetricWith(prometheus.Labels{labelCode: status, labelHandler: ctx.Path(), labelMethod: method})
 		if err != nil {
 			logrus.WithError(err).Error("unable to get the counter metrics in the api monitoring")
 			// maybe not a really smart choice, but for the moment let's not impact the business if the monitoring somehow failed (which will unlikely happen)
 			return nil
 		}
 		counter.Inc()
-		sum, err := m.durationHTTPRequest.GetMetricWith(prometheus.Labels{labelHandler: ctx.Path(), labelMethod: ctx.Request().Method})
+		sum, err := m.durationHTTPRequest.GetMetricWith(prometheus.Labels{labelHandler: ctx.Path(), labelMethod: method})
 		if err != nil {
 			logrus.WithError(err).Error("unable to get the summary metrics in the api monitoring")
 			// maybe not a really smart choice, but for the moment let's not impact the business if the monitoring somehow failed (which will unlikely happen)
