@@ -6,7 +6,7 @@ require (
 	github.com/kr/pretty v0.2.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/labstack/echo/v4 v4.6.3
-	github.com/nexucis/lamenv v0.3.0
+	github.com/nexucis/lamenv v0.3.1
 	github.com/prometheus/client_golang v1.12.0
 	github.com/prometheus/common v0.32.1
 	github.com/sirupsen/logrus v1.8.1
