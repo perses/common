@@ -148,6 +148,13 @@ func (d *daoImpl) Query(query Query, slice interface{}) error {
 	}
 
 	for _, kv := range gr.Kvs {
+		if len(kv.Value) == 0 {
+			logrus.Debugf("document with key %q has been ignored because the value is empty", kv.Key)
+			// If the value is empty, it is probably an ETCD lock.
+			// If it is not an ETCD lock, it has no sense to store an empty string according to our current architecture
+			continue
+		}
+
 		// first create a pointer with the accurate type
 		var value reflect.Value
 		if typeParameter.Elem().Kind() != reflect.Ptr {
