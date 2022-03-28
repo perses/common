@@ -5,7 +5,7 @@ jobs:
   test:
     executor:
       name: go/default
-      tag: '1.16'
+      tag: '1.18'
     steps:
       - checkout
       - go/load-cache
@@ -15,7 +15,7 @@ jobs:
   check_format:
     executor:
       name: go/default
-      tag: '1.16'
+      tag: '1.18'
     steps:
       - checkout
       - go/load-cache
