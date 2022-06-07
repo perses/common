@@ -8,7 +8,7 @@ require (
 	github.com/prometheus/client_golang v1.12.2
 	github.com/prometheus/common v0.34.0
 	github.com/sirupsen/logrus v1.8.1
-	github.com/stretchr/testify v1.7.1
+	github.com/stretchr/testify v1.7.2
 	go.etcd.io/etcd/api/v3 v3.5.4
 	go.etcd.io/etcd/client/v3 v3.5.4
 	google.golang.org/grpc v1.47.0
@@ -46,5 +46,5 @@ require (
 	golang.org/x/time v0.0.0-20201208040808-7e3f01d25324 // indirect
 	google.golang.org/genproto v0.0.0-20210602131652-f16073e35f0c // indirect
 	google.golang.org/protobuf v1.27.1 // indirect
-	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
