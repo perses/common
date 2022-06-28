@@ -27,18 +27,14 @@ func doneAsync() int {
 }
 
 func TestNextImpl_Await(t *testing.T) {
-	next := Async(func() interface{} {
-		return doneAsync()
-	})
-	result := next.Await()
+	n := Async(doneAsync)
+	result := n.Await()
 	assert.Equal(t, 1, result)
 }
 
 func TestNextImpl_AwaitWithContext(t *testing.T) {
 	ctx := context.Background()
-	next := Async(func() interface{} {
-		return doneAsync()
-	})
-	result := next.AwaitWithContext(ctx)
+	n := Async(doneAsync)
+	result, _ := n.AwaitWithContext(ctx)
 	assert.Equal(t, 1, result)
 }
