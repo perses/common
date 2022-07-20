@@ -6,7 +6,7 @@ require (
 	github.com/labstack/echo/v4 v4.7.2
 	github.com/nexucis/lamenv v0.4.0
 	github.com/prometheus/client_golang v1.12.2
-	github.com/prometheus/common v0.36.0
+	github.com/prometheus/common v0.37.0
 	github.com/sirupsen/logrus v1.9.0
 	github.com/stretchr/testify v1.8.0
 	go.etcd.io/etcd/api/v3 v3.5.4
