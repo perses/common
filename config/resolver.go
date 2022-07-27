@@ -228,6 +228,5 @@ func (c *configResolver) watchFile(onChange func()) error {
 			}
 		}
 	}()
-	watcher.Add(c.configFile)
 	return err
 }
