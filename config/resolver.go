@@ -56,6 +56,8 @@
 package config
 
 import (
+	"github.com/fsnotify/fsnotify"
+	"github.com/sirupsen/logrus"
 	"io/ioutil"
 	"os"
 	"reflect"
@@ -140,14 +142,15 @@ func verifyRec(conf reflect.Value) error {
 
 type Resolver interface {
 	SetEnvPrefix(prefix string) Resolver
-	SetConfigFile(filename string) Resolver
+	SetConfigFile(filename string, watch bool) Resolver
 	Resolve(config interface{}) Validator
 }
 
 type configResolver struct {
 	Resolver
-	prefix     string
-	configFile string
+	prefix          string
+	configFile      string
+	watchConfigFile bool
 }
 
 func NewResolver() Resolver {
@@ -160,8 +163,9 @@ func (c *configResolver) SetEnvPrefix(prefix string) Resolver {
 }
 
 // SetConfigFile is the way to set the path to the configFile (including the name of the file)
-func (c *configResolver) SetConfigFile(filename string) Resolver {
+func (c *configResolver) SetConfigFile(filename string, watch bool) Resolver {
 	c.configFile = filename
+	c.watchConfigFile = watch
 	return c
 }
 
@@ -169,6 +173,16 @@ func (c *configResolver) Resolve(config interface{}) Validator {
 	err := c.readFromFile(config)
 	if err == nil {
 		err = lamenv.Unmarshal(config, []string{c.prefix})
+		if c.watchConfigFile {
+			err = c.watchFile(func() {
+				err := c.readFromFile(config)
+				if err != nil {
+					logrus.Errorln("Cannot parse the watched config file:", err)
+					return
+				}
+				logrus.Infoln("Config file reloaded.")
+			})
+		}
 	}
 	return &validatorImpl{
 		err:    err,
@@ -193,4 +207,26 @@ func (c *configResolver) readFromFile(config interface{}) error {
 		return err
 	}
 	return nil
+}
+
+func (c *configResolver) watchFile(onChange func()) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if ok && event.Op&fsnotify.Write == fsnotify.Write {
+					onChange()
+				}
+			case err := <-watcher.Errors:
+				if err != nil {
+					logrus.Errorln("Error with the config watching: ", err)
+				}
+			}
+		}
+	}()
+	return err
 }
