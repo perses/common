@@ -74,4 +74,5 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 1, callbackCallCount)
+	assert.Equal(t, "yoyo", config.Field1)
 }

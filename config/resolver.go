@@ -194,21 +194,20 @@ func (c *configResolver[TConfig]) watchFile(config *TConfig) {
 	previousHash := c.hashConfig(config)
 
 	osutil.WatchFile(c.configFile, func() {
-		var newConfig TConfig
-		err := c.readFromFile(&newConfig)
+		err := c.readFromFile(config)
 		if err != nil {
 			logrus.Errorf("Cannot parse the watched config file %s: %s", c.configFile, err)
 			return
 		}
 
-		newHash := c.hashConfig(&newConfig)
+		newHash := c.hashConfig(config)
 		if reflect.DeepEqual(newHash, previousHash) {
 			return
 		}
 		previousHash = newHash
 
 		for _, c := range c.watchCallbacks {
-			c(&newConfig)
+			c(config)
 		}
 	})
 }
