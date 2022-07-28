@@ -59,7 +59,6 @@ import (
 	"crypto/sha1"
 	"github.com/perses/common/file"
 	"github.com/sirupsen/logrus"
-	"hash"
 	"io/ioutil"
 	"os"
 	"reflect"
@@ -191,17 +190,17 @@ func (c *configResolver[T]) Resolve(config *T) Validator {
 }
 
 func (c *configResolver[T]) watchFile(config *T) {
-	previousHash := c.hashConfig(config)
+	previousHash, _ := c.hashConfig(config)
 
-	file.Watch(c.configFile, func() {
+	err := file.Watch(c.configFile, func() {
 		err := c.readFromFile(config)
 		if err != nil {
-			logrus.Errorf("Cannot parse the watched config file %s: %s", c.configFile, err)
+			logrus.WithError(err).Errorf("Cannot parse the watched config file %s", c.configFile)
 			return
 		}
 
-		newHash := c.hashConfig(config)
-		if reflect.DeepEqual(newHash, previousHash) {
+		newHash, _ := c.hashConfig(config)
+		if previousHash == newHash {
 			return
 		}
 		previousHash = newHash
@@ -210,6 +209,10 @@ func (c *configResolver[T]) watchFile(config *T) {
 			c(config)
 		}
 	})
+
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to watch the config file %s", c.configFile)
+	}
 }
 
 func (c *configResolver[T]) readFromFile(config *T) error {
@@ -231,17 +234,11 @@ func (c *configResolver[T]) readFromFile(config *T) error {
 	return nil
 }
 
-func (c *configResolver[T]) hashConfig(config *T) hash.Hash {
-	hash := sha1.New()
+func (c *configResolver[T]) hashConfig(config *T) ([20]byte, error) {
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		logrus.Errorf("Cannot marshal the config: %s", err)
-		return nil
+		return [20]byte{}, err
 	}
-	_, err = hash.Write(data)
-	if err != nil {
-		logrus.Errorf("Cannot compute the hash of the configuration: %s", err)
-		return nil
-	}
-	return hash
+	return sha1.Sum(data), err
 }

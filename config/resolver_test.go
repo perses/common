@@ -41,13 +41,17 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 	const initialContent = "field1: toto"
 	const changedContent = "field1: yoyo"
 
-	os.WriteFile(configFile, []byte(initialContent), 0777)
+	err := os.WriteFile(configFile, []byte(initialContent), 0777)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	defer os.Remove(configFile)
 
 	var config Config
 
 	callbackCallCount := 0
-	err := NewResolver[Config]().
+	err = NewResolver[Config]().
 		SetConfigFile(configFile).
 		AddChangeCallback(func(newConfig *Config) {
 			callbackCallCount++
@@ -61,13 +65,21 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 	}
 
 	// No change, callbacks shouldnt be called
-	os.WriteFile(configFile, []byte(initialContent), 0777)
+	err = os.WriteFile(configFile, []byte(initialContent), 0777)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 0, callbackCallCount)
 
 	// Changes done, callbacks must be called
-	os.WriteFile(configFile, []byte(changedContent), 0777)
+	err = os.WriteFile(configFile, []byte(changedContent), 0777)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 1, callbackCallCount)
@@ -81,13 +93,17 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 	const initialContent = "[0,1]"
 	const changedContent = "[3,4,5]"
 
-	os.WriteFile(configFile, []byte(initialContent), 0777)
+	err := os.WriteFile(configFile, []byte(initialContent), 0777)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	defer os.Remove(configFile)
 
 	var config Config
 
 	callbackCallCount := 0
-	err := NewResolver[Config]().
+	err = NewResolver[Config]().
 		SetConfigFile(configFile).
 		AddChangeCallback(func(newConfig *Config) {
 			callbackCallCount++
@@ -101,7 +117,11 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 	}
 
 	// Changes done, callbacks must be called
-	os.WriteFile(configFile, []byte(changedContent), 0777)
+	err = os.WriteFile(configFile, []byte(changedContent), 0777)
+	if err != nil {
+		t.Error(err)
+		return
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 1, callbackCallCount)
