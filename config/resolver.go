@@ -170,6 +170,8 @@ func (c *configResolver[T]) SetConfigFile(filename string) Resolver[T] {
 	return c
 }
 
+// AddChangeCallback is the way to add a callback that will be called when the config is changed
+// The callback will be called with a pointer to the base config with the new values
 func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 	c.watchCallbacks = append(c.watchCallbacks, callback)
 	return c
@@ -234,11 +236,11 @@ func (c *configResolver[T]) readFromFile(config *T) error {
 	return nil
 }
 
-func (c *configResolver[T]) hashConfig(config *T) ([20]byte, error) {
+func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		logrus.Errorf("Cannot marshal the config: %s", err)
-		return [20]byte{}, err
+		return [sha1.Size]byte{}, err
 	}
 	return sha1.Sum(data), err
 }

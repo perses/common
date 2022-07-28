@@ -19,6 +19,13 @@ import (
 	"path/filepath"
 )
 
+// Watch watches the given filename and calls the given callback when the file is changed.
+// If the file does not exist, the watcher uses the parent directory as a watchpoint.
+// Example:
+// 		file.Watch("/tmp/test.txt", func() {
+// 			fmt.Println("File created or changed")
+// 		}
+// 	)
 func Watch(filename string, callback func()) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
