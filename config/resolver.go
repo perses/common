@@ -56,6 +56,10 @@
 package config
 
 import (
+	"crypto/sha1"
+	"github.com/perses/common/osutil"
+	"github.com/sirupsen/logrus"
+	"hash"
 	"io/ioutil"
 	"os"
 	"reflect"
@@ -138,37 +142,47 @@ func verifyRec(conf reflect.Value) error {
 	return nil
 }
 
-type Resolver interface {
-	SetEnvPrefix(prefix string) Resolver
-	SetConfigFile(filename string) Resolver
-	Resolve(config interface{}) Validator
+type Resolver[TConfig any] interface {
+	SetEnvPrefix(prefix string) Resolver[TConfig]
+	SetConfigFile(filename string) Resolver[TConfig]
+	AddChangeCallback(func(*TConfig)) Resolver[TConfig]
+	Resolve(config *TConfig) Validator
 }
 
-type configResolver struct {
-	Resolver
-	prefix     string
-	configFile string
+type configResolver[TConfig any] struct {
+	Resolver[TConfig]
+	prefix         string
+	configFile     string
+	watchCallbacks []func(*TConfig)
 }
 
-func NewResolver() Resolver {
-	return &configResolver{}
+func NewResolver[TConfig any]() Resolver[TConfig] {
+	return &configResolver[TConfig]{}
 }
 
-func (c *configResolver) SetEnvPrefix(prefix string) Resolver {
+func (c *configResolver[TConfig]) SetEnvPrefix(prefix string) Resolver[TConfig] {
 	c.prefix = prefix
 	return c
 }
 
 // SetConfigFile is the way to set the path to the configFile (including the name of the file)
-func (c *configResolver) SetConfigFile(filename string) Resolver {
+func (c *configResolver[TConfig]) SetConfigFile(filename string) Resolver[TConfig] {
 	c.configFile = filename
 	return c
 }
 
-func (c *configResolver) Resolve(config interface{}) Validator {
+func (c *configResolver[TConfig]) AddChangeCallback(callback func(*TConfig)) Resolver[TConfig] {
+	c.watchCallbacks = append(c.watchCallbacks, callback)
+	return c
+}
+
+func (c *configResolver[TConfig]) Resolve(config *TConfig) Validator {
 	err := c.readFromFile(config)
 	if err == nil {
 		err = lamenv.Unmarshal(config, []string{c.prefix})
+		if len(c.watchCallbacks) != 0 {
+			c.watchFile(config)
+		}
 	}
 	return &validatorImpl{
 		err:    err,
@@ -176,7 +190,30 @@ func (c *configResolver) Resolve(config interface{}) Validator {
 	}
 }
 
-func (c *configResolver) readFromFile(config interface{}) error {
+func (c *configResolver[TConfig]) watchFile(config *TConfig) {
+	previousHash := c.hashConfig(config)
+
+	osutil.WatchFile(c.configFile, func() {
+		var newConfig TConfig
+		err := c.readFromFile(&newConfig)
+		if err != nil {
+			logrus.Errorf("Cannot parse the watched config file %s: %s", c.configFile, err)
+			return
+		}
+
+		newHash := c.hashConfig(&newConfig)
+		if reflect.DeepEqual(newHash, previousHash) {
+			return
+		}
+		previousHash = newHash
+
+		for _, c := range c.watchCallbacks {
+			c(&newConfig)
+		}
+	})
+}
+
+func (c *configResolver[TConfig]) readFromFile(config *TConfig) error {
 	if len(c.configFile) == 0 {
 		return nil
 	}
@@ -193,4 +230,19 @@ func (c *configResolver) readFromFile(config interface{}) error {
 		return err
 	}
 	return nil
+}
+
+func (c *configResolver[TConfig]) hashConfig(config *TConfig) hash.Hash {
+	hash := sha1.New()
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		logrus.Errorf("Cannot marshal the config: %s", err)
+		return nil
+	}
+	_, err = hash.Write(data)
+	if err != nil {
+		logrus.Errorf("Cannot compute the hash of the configuration: %s", err)
+		return nil
+	}
+	return hash
 }
