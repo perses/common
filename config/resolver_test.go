@@ -37,21 +37,18 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 		Field1 string `yaml:"field1"`
 	}
 
-	const ConfigFile = "ut_resolve_1.yaml"
-	const InitialContent = "field1: toto"
-	const ChangedContent = "field1: yoyo"
+	const configFile = "ut_resolve_1.yaml"
+	const initialContent = "field1: toto"
+	const changedContent = "field1: yoyo"
 
-	os.WriteFile(ConfigFile, []byte(InitialContent), 0777)
-	defer os.Remove(ConfigFile)
-
-	// Wait to ignore file creation fs event
-	time.Sleep(50 * time.Millisecond)
+	os.WriteFile(configFile, []byte(initialContent), 0777)
+	defer os.Remove(configFile)
 
 	var config Config
 
 	callbackCallCount := 0
 	err := NewResolver[Config]().
-		SetConfigFile(ConfigFile).
+		SetConfigFile(configFile).
 		AddChangeCallback(func(newConfig *Config) {
 			callbackCallCount++
 		}).
@@ -64,15 +61,51 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 	}
 
 	// No change, callbacks shouldnt be called
-	os.WriteFile(ConfigFile, []byte(InitialContent), 0777)
+	os.WriteFile(configFile, []byte(initialContent), 0777)
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 0, callbackCallCount)
 
 	// Changes done, callbacks must be called
-	os.WriteFile(ConfigFile, []byte(ChangedContent), 0777)
+	os.WriteFile(configFile, []byte(changedContent), 0777)
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 1, callbackCallCount)
 	assert.Equal(t, "yoyo", config.Field1)
+}
+
+func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
+	type Config []int
+
+	const configFile = "ut_resolve_2.yaml"
+	const initialContent = "[0,1]"
+	const changedContent = "[3,4,5]"
+
+	os.WriteFile(configFile, []byte(initialContent), 0777)
+	defer os.Remove(configFile)
+
+	var config Config
+
+	callbackCallCount := 0
+	err := NewResolver[Config]().
+		SetConfigFile(configFile).
+		AddChangeCallback(func(newConfig *Config) {
+			callbackCallCount++
+		}).
+		Resolve(&config).
+		Verify()
+
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Changes done, callbacks must be called
+	os.WriteFile(configFile, []byte(changedContent), 0777)
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, 1, callbackCallCount)
+	assert.Equal(t, 3, config[0])
+	assert.Equal(t, 4, config[1])
+	assert.Equal(t, 5, config[2])
 }

@@ -57,7 +57,7 @@ package config
 
 import (
 	"crypto/sha1"
-	"github.com/perses/common/osutil"
+	"github.com/perses/common/file"
 	"github.com/sirupsen/logrus"
 	"hash"
 	"io/ioutil"
@@ -142,41 +142,41 @@ func verifyRec(conf reflect.Value) error {
 	return nil
 }
 
-type Resolver[TConfig any] interface {
-	SetEnvPrefix(prefix string) Resolver[TConfig]
-	SetConfigFile(filename string) Resolver[TConfig]
-	AddChangeCallback(func(*TConfig)) Resolver[TConfig]
-	Resolve(config *TConfig) Validator
+type Resolver[T any] interface {
+	SetEnvPrefix(prefix string) Resolver[T]
+	SetConfigFile(filename string) Resolver[T]
+	AddChangeCallback(func(*T)) Resolver[T]
+	Resolve(config *T) Validator
 }
 
-type configResolver[TConfig any] struct {
-	Resolver[TConfig]
+type configResolver[T any] struct {
+	Resolver[T]
 	prefix         string
 	configFile     string
-	watchCallbacks []func(*TConfig)
+	watchCallbacks []func(*T)
 }
 
-func NewResolver[TConfig any]() Resolver[TConfig] {
-	return &configResolver[TConfig]{}
+func NewResolver[T any]() Resolver[T] {
+	return &configResolver[T]{}
 }
 
-func (c *configResolver[TConfig]) SetEnvPrefix(prefix string) Resolver[TConfig] {
+func (c *configResolver[T]) SetEnvPrefix(prefix string) Resolver[T] {
 	c.prefix = prefix
 	return c
 }
 
 // SetConfigFile is the way to set the path to the configFile (including the name of the file)
-func (c *configResolver[TConfig]) SetConfigFile(filename string) Resolver[TConfig] {
+func (c *configResolver[T]) SetConfigFile(filename string) Resolver[T] {
 	c.configFile = filename
 	return c
 }
 
-func (c *configResolver[TConfig]) AddChangeCallback(callback func(*TConfig)) Resolver[TConfig] {
+func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 	c.watchCallbacks = append(c.watchCallbacks, callback)
 	return c
 }
 
-func (c *configResolver[TConfig]) Resolve(config *TConfig) Validator {
+func (c *configResolver[T]) Resolve(config *T) Validator {
 	err := c.readFromFile(config)
 	if err == nil {
 		err = lamenv.Unmarshal(config, []string{c.prefix})
@@ -190,10 +190,10 @@ func (c *configResolver[TConfig]) Resolve(config *TConfig) Validator {
 	}
 }
 
-func (c *configResolver[TConfig]) watchFile(config *TConfig) {
+func (c *configResolver[T]) watchFile(config *T) {
 	previousHash := c.hashConfig(config)
 
-	osutil.WatchFile(c.configFile, func() {
+	file.Watch(c.configFile, func() {
 		err := c.readFromFile(config)
 		if err != nil {
 			logrus.Errorf("Cannot parse the watched config file %s: %s", c.configFile, err)
@@ -212,7 +212,7 @@ func (c *configResolver[TConfig]) watchFile(config *TConfig) {
 	})
 }
 
-func (c *configResolver[TConfig]) readFromFile(config *TConfig) error {
+func (c *configResolver[T]) readFromFile(config *T) error {
 	if len(c.configFile) == 0 {
 		return nil
 	}
@@ -231,7 +231,7 @@ func (c *configResolver[TConfig]) readFromFile(config *TConfig) error {
 	return nil
 }
 
-func (c *configResolver[TConfig]) hashConfig(config *TConfig) hash.Hash {
+func (c *configResolver[T]) hashConfig(config *T) hash.Hash {
 	hash := sha1.New()
 	data, err := yaml.Marshal(config)
 	if err != nil {
