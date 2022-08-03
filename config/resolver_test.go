@@ -32,7 +32,7 @@ func TestValidatorImpl_VerifyShouldSetDefaultValue(t *testing.T) {
 	assert.Equal(t, "set", mc.Foo.FieldToSet)
 }
 
-func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChange(t *testing.T) {
+func TestResolveImpl_WatchConfigShouldNotifyOnlyWhenValuesChange(t *testing.T) {
 	type Config struct {
 		Field1 string `yaml:"field1"`
 	}
