@@ -14,9 +14,10 @@
 package file
 
 import (
+	"path/filepath"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
-	"path/filepath"
 )
 
 // Watch watches the given filename and calls the given callback when the file is changed.
