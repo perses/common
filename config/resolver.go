@@ -195,20 +195,23 @@ func (c *configResolver[T]) watchFile(config *T) {
 	previousHash, _ := c.hashConfig(config)
 
 	err := file.Watch(c.configFile, func() {
-		err := c.readFromFile(config)
+		var newConfig T
+		err := c.readFromFile(&newConfig)
 		if err != nil {
 			logrus.WithError(err).Errorf("Cannot parse the watched config file %s", c.configFile)
 			return
 		}
 
-		newHash, _ := c.hashConfig(config)
+		logrus.Debugln("New configuration loaded")
+
+		newHash, _ := c.hashConfig(&newConfig)
 		if previousHash == newHash {
 			return
 		}
 		previousHash = newHash
 
 		for _, c := range c.watchCallbacks {
-			c(config)
+			c(&newConfig)
 		}
 	})
 

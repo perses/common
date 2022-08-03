@@ -48,13 +48,17 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 	}
 	defer os.Remove(configFile)
 
+	time.Sleep(50 * time.Millisecond)
+
 	var config Config
+	var updatedConfig Config
 
 	callbackCallCount := 0
 	err = NewResolver[Config]().
 		SetConfigFile(configFile).
 		AddChangeCallback(func(newConfig *Config) {
 			callbackCallCount++
+			updatedConfig = *newConfig
 		}).
 		Resolve(&config).
 		Verify()
@@ -64,7 +68,7 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 		return
 	}
 
-	// No change, callbacks shouldnt be called
+	// No change, callbacks shouldn't be called
 	err = os.WriteFile(configFile, []byte(initialContent), 0777)
 	if err != nil {
 		t.Error(err)
@@ -83,7 +87,8 @@ func TestResolveImpl_WatchConfigShouldCallCallbackOnlyOnConfigurationContentChan
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 1, callbackCallCount)
-	assert.Equal(t, "yoyo", config.Field1)
+	assert.Equal(t, "toto", config.Field1)
+	assert.Equal(t, "yoyo", updatedConfig.Field1)
 }
 
 func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
@@ -100,13 +105,17 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 	}
 	defer os.Remove(configFile)
 
+	time.Sleep(50 * time.Millisecond)
+
 	var config Config
+	var updatedConfig Config
 
 	callbackCallCount := 0
 	err = NewResolver[Config]().
 		SetConfigFile(configFile).
 		AddChangeCallback(func(newConfig *Config) {
 			callbackCallCount++
+			updatedConfig = *newConfig
 		}).
 		Resolve(&config).
 		Verify()
@@ -125,7 +134,11 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, 1, callbackCallCount)
-	assert.Equal(t, 3, config[0])
-	assert.Equal(t, 4, config[1])
-	assert.Equal(t, 5, config[2])
+
+	assert.Equal(t, 0, config[0])
+	assert.Equal(t, 1, config[1])
+
+	assert.Equal(t, 3, updatedConfig[0])
+	assert.Equal(t, 4, updatedConfig[1])
+	assert.Equal(t, 5, updatedConfig[2])
 }
