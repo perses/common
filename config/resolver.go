@@ -210,8 +210,8 @@ func (c *configResolver[T]) watchFile(config *T) {
 		}
 		previousHash = newHash
 
-		for _, c := range c.watchCallbacks {
-			c(&newConfig)
+		for _, callback := range c.watchCallbacks {
+			callback(&newConfig)
 		}
 	})
 
@@ -240,6 +240,16 @@ func (c *configResolver[T]) readFromFile(config *T) error {
 }
 
 func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
+	// We don't use the file content to calculate the hash.
+	// 
+	// The main reason is if the change doesn't affect a field
+	// tracked by the config, we don't want to notify the change.
+	// 
+	// This can happen if the struct is a part of a yaml file,
+	// the change is just a syntaxic change, or doesn't affect a
+	// value of the struct (e.g. a comment or a reordering)
+	//
+	// To avoid this, we have to remarshal the unmarshaled struct.
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		logrus.Errorf("Cannot marshal the config: %s", err)
