@@ -56,11 +56,14 @@
 package config
 
 import (
+	"crypto/sha1"
 	"io/ioutil"
 	"os"
 	"reflect"
 
 	"github.com/nexucis/lamenv"
+	"github.com/perses/common/file"
+	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 )
 
@@ -138,37 +141,49 @@ func verifyRec(conf reflect.Value) error {
 	return nil
 }
 
-type Resolver interface {
-	SetEnvPrefix(prefix string) Resolver
-	SetConfigFile(filename string) Resolver
-	Resolve(config interface{}) Validator
+type Resolver[T any] interface {
+	SetEnvPrefix(prefix string) Resolver[T]
+	SetConfigFile(filename string) Resolver[T]
+	AddChangeCallback(func(*T)) Resolver[T]
+	Resolve(config *T) Validator
 }
 
-type configResolver struct {
-	Resolver
-	prefix     string
-	configFile string
+type configResolver[T any] struct {
+	Resolver[T]
+	prefix         string
+	configFile     string
+	watchCallbacks []func(*T)
 }
 
-func NewResolver() Resolver {
-	return &configResolver{}
+func NewResolver[T any]() Resolver[T] {
+	return &configResolver[T]{}
 }
 
-func (c *configResolver) SetEnvPrefix(prefix string) Resolver {
+func (c *configResolver[T]) SetEnvPrefix(prefix string) Resolver[T] {
 	c.prefix = prefix
 	return c
 }
 
 // SetConfigFile is the way to set the path to the configFile (including the name of the file)
-func (c *configResolver) SetConfigFile(filename string) Resolver {
+func (c *configResolver[T]) SetConfigFile(filename string) Resolver[T] {
 	c.configFile = filename
 	return c
 }
 
-func (c *configResolver) Resolve(config interface{}) Validator {
+// AddChangeCallback is the way to add a callback that will be called when the config is changed
+// The callback will be called with a pointer to the base config with the new values
+func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
+	c.watchCallbacks = append(c.watchCallbacks, callback)
+	return c
+}
+
+func (c *configResolver[T]) Resolve(config *T) Validator {
 	err := c.readFromFile(config)
 	if err == nil {
 		err = lamenv.Unmarshal(config, []string{c.prefix})
+		if len(c.watchCallbacks) != 0 {
+			c.watchFile(config)
+		}
 	}
 	return &validatorImpl{
 		err:    err,
@@ -176,7 +191,36 @@ func (c *configResolver) Resolve(config interface{}) Validator {
 	}
 }
 
-func (c *configResolver) readFromFile(config interface{}) error {
+func (c *configResolver[T]) watchFile(config *T) {
+	previousHash, _ := c.hashConfig(config)
+
+	err := file.Watch(c.configFile, func() {
+		var newConfig T
+		err := c.readFromFile(&newConfig)
+		if err != nil {
+			logrus.WithError(err).Errorf("Cannot parse the watched config file %s", c.configFile)
+			return
+		}
+
+		logrus.Debugln("New configuration loaded")
+
+		newHash, _ := c.hashConfig(&newConfig)
+		if previousHash == newHash {
+			return
+		}
+		previousHash = newHash
+
+		for _, callback := range c.watchCallbacks {
+			callback(&newConfig)
+		}
+	})
+
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to watch the config file %s", c.configFile)
+	}
+}
+
+func (c *configResolver[T]) readFromFile(config *T) error {
 	if len(c.configFile) == 0 {
 		return nil
 	}
@@ -193,4 +237,23 @@ func (c *configResolver) readFromFile(config interface{}) error {
 		return err
 	}
 	return nil
+}
+
+func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
+	// We don't use the file content to calculate the hash.
+	//
+	// The main reason is if the change doesn't affect a field
+	// tracked by the config, we don't want to notify the change.
+	//
+	// This can happen if the struct is a part of a yaml file,
+	// the change is just a syntaxic change, or doesn't affect a
+	// value of the struct (e.g. a comment or a reordering)
+	//
+	// To avoid this, we have to remarshal the unmarshaled struct.
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		logrus.Errorf("Cannot marshal the config: %s", err)
+		return [sha1.Size]byte{}, err
+	}
+	return sha1.Sum(data), err
 }
