@@ -37,7 +37,7 @@ func Watch(filename string, callback func()) error {
 		for {
 			select {
 			case event := <-watcher.Events:
-				// As we are watching the parent directory, we only care 
+				// As we are watching the parent directory, we only care
 				// about file creation and changes on the given filename.
 				if event.Op&fsnotify.Write == fsnotify.Write && filepath.Base(event.Name) == filepath.Base(filename) {
 					callback()
