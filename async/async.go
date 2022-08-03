@@ -87,7 +87,7 @@ func emptyValue[T any]() T {
 }
 
 type Future[T any] interface {
-	Await() T
+	Await() (T, error)
 	AwaitWithContext(ctx context.Context) (T, error)
 }
 
@@ -95,9 +95,9 @@ type next[T any] struct {
 	await func(ctx context.Context) (T, error)
 }
 
-func (n *next[T]) Await() T {
-	result, _ := n.await(context.Background())
-	return result
+func (n *next[T]) Await() (T, error) {
+	result, error := n.await(context.Background())
+	return result, error
 }
 
 func (n *next[T]) AwaitWithContext(ctx context.Context) (T, error) {
@@ -105,13 +105,14 @@ func (n *next[T]) AwaitWithContext(ctx context.Context) (T, error) {
 }
 
 // Async executes the asynchronous function
-func Async[T any](f func() T) Future[T] {
+func Async[T any](f func() (T, error)) Future[T] {
 	var result T
+	var resultError error
 	// c is going to be used to catch only the signal when the channel is closed.
 	c := make(chan struct{})
 	go func() {
 		defer close(c)
-		result = f()
+		result, resultError = f()
 	}()
 	return &next[T]{
 		await: func(ctx context.Context) (T, error) {
@@ -119,7 +120,7 @@ func Async[T any](f func() T) Future[T] {
 			case <-ctx.Done():
 				return emptyValue[T](), ctx.Err()
 			case <-c:
-				return result, nil
+				return result, resultError
 			}
 		},
 	}
