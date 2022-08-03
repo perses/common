@@ -36,7 +36,7 @@ func Watch(filename string, callback func()) error {
 		for {
 			select {
 			case event := <-watcher.Events:
-				if event.Op&fsnotify.Write == fsnotify.Write && event.Name == filename {
+				if event.Op&fsnotify.Write == fsnotify.Write && filepath.Base(event.Name) == filepath.Base(filename) {
 					callback()
 				}
 			case err := <-watcher.Errors:
