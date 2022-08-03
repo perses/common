@@ -21,7 +21,8 @@ import (
 )
 
 // Watch watches the given filename and calls the given callback when the file is changed.
-// If the file does not exist, the watcher uses the parent directory as a watchpoint.
+// The watcher uses the parent directory as a watchpoint to be notified if the file doesn't
+// exist when the watcher is created.
 // Example:
 // 		file.Watch("/tmp/test.txt", func() {
 // 			fmt.Println("File created or changed")
@@ -36,6 +37,8 @@ func Watch(filename string, callback func()) error {
 		for {
 			select {
 			case event := <-watcher.Events:
+				// As we are watching the parent directory, we only care 
+				// about file creation and changes on the given filename.
 				if event.Op&fsnotify.Write == fsnotify.Write && filepath.Base(event.Name) == filepath.Base(filename) {
 					callback()
 				}
@@ -46,6 +49,8 @@ func Watch(filename string, callback func()) error {
 			}
 		}
 	}()
+	// Watch the parent directory of the given filename.
+	// Fix a bug with fsnotify if the file does not exist.
 	err = watcher.Add(filepath.Dir(filename))
 	return err
 }
