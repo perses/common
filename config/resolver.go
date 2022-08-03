@@ -57,13 +57,13 @@ package config
 
 import (
 	"crypto/sha1"
-	"github.com/perses/common/file"
-	"github.com/sirupsen/logrus"
 	"io/ioutil"
 	"os"
 	"reflect"
 
 	"github.com/nexucis/lamenv"
+	"github.com/perses/common/file"
+	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 )
 
@@ -241,10 +241,10 @@ func (c *configResolver[T]) readFromFile(config *T) error {
 
 func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
 	// We don't use the file content to calculate the hash.
-	// 
+	//
 	// The main reason is if the change doesn't affect a field
 	// tracked by the config, we don't want to notify the change.
-	// 
+	//
 	// This can happen if the struct is a part of a yaml file,
 	// the change is just a syntaxic change, or doesn't affect a
 	// value of the struct (e.g. a comment or a reordering)
