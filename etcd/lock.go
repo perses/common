@@ -25,11 +25,13 @@ import (
 // KeyLocker is the interface that will provide methods to lock and unlock for a specific key
 // Recommended usage :
 // ```
-//    err := k.Lock(key)
-//    defer k.Unlock(key)
-//    if err != nil {
-//      // do something with the error
-//    }
+//
+//	err := k.Lock(key)
+//	defer k.Unlock(key)
+//	if err != nil {
+//	  // do something with the error
+//	}
+//
 // ```
 type KeyLocker interface {
 	// Lock is creating a lock for the given key

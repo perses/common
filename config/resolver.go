@@ -20,44 +20,44 @@
 // The main entry point of this package is the struct Resolver.
 // This struct will allow you to set the path to your config file if you have one and to give the prefix of all of your environment variable.
 // Note:
-//   1. A good practice is to prefix your environment variable by the name of your application.
-//   2. The config file is not mandatory, you can manage all you configuration using the environment variable.
-//   3. The config by environment is always overriding the config by file.
+//  1. A good practice is to prefix your environment variable by the name of your application.
+//  2. The config file is not mandatory, you can manage all you configuration using the environment variable.
+//  3. The config by environment is always overriding the config by file.
 //
 // The Resolver at the end returns an object that implements the interface Validator.
 // Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
 // The object returned by the Resolver will loop other different structs that are parts of the config and execute the method Verify if implemented.
 //
 // Example:
-//   import (
-//           "fmt"
 //
-//           "github.com/perses/common/config"
-//   )
+//	  import (
+//	          "fmt"
 //
-//    type Config struct {
-//	    Etcd *EtcdConfig `yaml:"etcd"`
-//    }
+//	          "github.com/perses/common/config"
+//	  )
 //
-//    func (c *Config) Verify() error {
-//      if c.EtcdConfig == nil {
-//        return fmt.Errorf("etcd config cannot be empty")
-//      }
-//    }
+//	   type Config struct {
+//		    Etcd *EtcdConfig `yaml:"etcd"`
+//	   }
 //
-//    func Resolve(configFile string) (Config, error) {
-//	    c := Config{}
-//	    return c, config.NewResolver().
-//		  SetConfigFile(configFile).
-//		  SetEnvPrefix("PERSES").
-//		  Resolve(&c).
-//		  Verify()
-//    }
+//	   func (c *Config) Verify() error {
+//	     if c.EtcdConfig == nil {
+//	       return fmt.Errorf("etcd config cannot be empty")
+//	     }
+//	   }
+//
+//	   func Resolve(configFile string) (Config, error) {
+//		    c := Config{}
+//		    return c, config.NewResolver().
+//			  SetConfigFile(configFile).
+//			  SetEnvPrefix("PERSES").
+//			  Resolve(&c).
+//			  Verify()
+//	   }
 package config
 
 import (
 	"crypto/sha1"
-	"io/ioutil"
 	"os"
 	"reflect"
 
@@ -226,7 +226,7 @@ func (c *configResolver[T]) readFromFile(config *T) error {
 	}
 	if _, err := os.Stat(c.configFile); err == nil {
 		// the file exists so we should unmarshal the configuration using yaml
-		data, fileErr := ioutil.ReadFile(c.configFile)
+		data, fileErr := os.ReadFile(c.configFile)
 		if fileErr != nil {
 			return fileErr
 		}
@@ -246,7 +246,7 @@ func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
 	// tracked by the config, we don't want to notify the change.
 	//
 	// This can happen if the struct is a part of a yaml file,
-	// the change is just a syntaxic change, or doesn't affect a
+	// the change is just a syntax change, or doesn't affect a
 	// value of the struct (e.g. a comment or a reordering)
 	//
 	// To avoid this, we have to remarshal the unmarshaled struct.

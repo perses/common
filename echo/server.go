@@ -17,7 +17,7 @@
 //
 // Please favour the usage of [app](../app) package to run an echo web server.
 //
-// Features
+// # Features
 //
 // - Build and run an echo server with a "/metrics" endpoint.
 //
@@ -25,31 +25,30 @@
 //
 // - Register a Middleware.
 //
-// Usage
+// # Usage
 //
 // Instantiate a simple server task :
 //
-//  package my_package
+//	package my_package
 //
-//  import (
-//      "context"
+//	import (
+//	    "context"
 //
-//      "github.com/perses/common/echo"
-//  )
+//	    "github.com/perses/common/echo"
+//	)
 //
-//  const (
-//      // The address on which the server is listening.
-//      addr = ":8080"
-//      metricNamespace = "my_project"
-//  )
+//	const (
+//	    // The address on which the server is listening.
+//	    addr = ":8080"
+//	    metricNamespace = "my_project"
+//	)
 //
-//  func main() {
-//      serverTask, err := echo.NewBuilder(addr).
-//              APIRegistration(echo.NewMetricsAPI(true)).
-//              MetricNamespace(metricNamespace).
-//              Build()
-//  }
-//
+//	func main() {
+//	    serverTask, err := echo.NewBuilder(addr).
+//	            APIRegistration(echo.NewMetricsAPI(true)).
+//	            MetricNamespace(metricNamespace).
+//	            Build()
+//	}
 package echo
 
 import (
