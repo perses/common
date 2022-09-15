@@ -51,6 +51,7 @@ import (
 	"github.com/perses/common/async"
 	"github.com/perses/common/async/taskhelper"
 	"github.com/perses/common/echo"
+	"github.com/perses/common/otel"
 	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
 )
@@ -61,7 +62,8 @@ var (
 	// includes the calling method as a field in the log
 	logMethodTrace bool
 	// http address listened
-	addr string
+	addr            string
+	otelServiceName string
 )
 
 // mainHeader logs the start time and various build information.
@@ -77,6 +79,7 @@ func init() {
 	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
 	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
 	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
+	flag.StringVar(&otelServiceName, "otel.service-name", "", "The service name used when instantiate the OTeL provider")
 }
 
 type cron struct {
@@ -93,8 +96,9 @@ type Runner struct {
 	// for each task a async.TaskRunner will be created
 	tasks []interface{}
 	// helpers is the different helper to execute
-	helpers       []taskhelper.Helper
-	serverBuilder *echo.Builder
+	helpers         []taskhelper.Helper
+	serverBuilder   *echo.Builder
+	providerBuilder *otel.Builder
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
 	banner           string
@@ -117,7 +121,7 @@ func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 }
 
 // SetBanner is setting  a string (ideally the logo of the project) that would be printed when the runner is started.
-// Additionally you can also print the Version, the BuildTime and the Commit.
+// Additionally, you can also print the Version, the BuildTime and the Commit.
 // You just have to add '%s' in your banner where you want to print each information (one '%s' per additional information).
 // If set, then the main header won't be printed. The main header is printing the Version, the Commit and the BuildTime.
 func (r *Runner) SetBanner(banner string) *Runner {
@@ -158,6 +162,13 @@ func (r *Runner) HTTPServerBuilder() *echo.Builder {
 		r.serverBuilder = echo.NewBuilder(addr)
 	}
 	return r.serverBuilder
+}
+
+func (r *Runner) OTeLProviderBuilder() *otel.Builder {
+	if r.providerBuilder == nil {
+		r.providerBuilder = otel.NewBuilder(otelServiceName)
+	}
+	return r.providerBuilder
 }
 
 // Start will start the application. It is a blocking method and will give back the end once every tasks handled are done.
@@ -210,6 +221,13 @@ func (r *Runner) buildTask() {
 			logrus.WithError(err).Fatal("An error occurred while creating the server task")
 		} else {
 			r.tasks = append(r.tasks, serverTask)
+		}
+	}
+	if r.providerBuilder != nil {
+		if providerTask, err := r.providerBuilder.Build(); err != nil {
+			logrus.WithError(err).Fatal("An error occurred while creating the OTeL provider task")
+		} else {
+			r.tasks = append(r.tasks, providerTask)
 		}
 	}
 	// create the signal listener and add it to all others tasks
