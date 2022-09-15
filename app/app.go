@@ -17,27 +17,27 @@
 // A quite straightforward usage of this package is when you are implementing an HTTP API and want to expose it.
 // In that case you can use the following example:
 //
-//   package main
-//   import (
-//     "github.com/perses/commun/app"
-//   )
-//   func main() {
-//     // create your api
-//     api := newAPI()
-//     // then use the app package to start it properly
-//     runner := app.NewRunner().WithDefaultHTTPServer("your_api_name")
-//     runner.HTTPServerBuilder().APIRegistration(api)
-//     // start the application
-//     runner.Start()
-//   }
+//	package main
+//	import (
+//	  "github.com/perses/commun/app"
+//	)
+//	func main() {
+//	  // create your api
+//	  api := newAPI()
+//	  // then use the app package to start it properly
+//	  runner := app.NewRunner().WithDefaultHTTPServer("your_api_name")
+//	  runner.HTTPServerBuilder().APIRegistration(api)
+//	  // start the application
+//	  runner.Start()
+//	}
 //
 // You can also add custom tasks to the runner using WithTasks :
-//  // Run all the tasks
-//  runner := app.NewRunner().
-//      WithTasks(myTask1, myTask2).
-//      WithDefaultServerTask(prometheusNamespace)
-//  runner.Start()
 //
+//	// Run all the tasks
+//	runner := app.NewRunner().
+//	    WithTasks(myTask1, myTask2).
+//	    WithDefaultServerTask(prometheusNamespace)
+//	runner.Start()
 package app
 
 import (

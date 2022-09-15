@@ -24,10 +24,11 @@ import (
 // The watcher uses the parent directory as a watchpoint to be notified if the file doesn't
 // exist when the watcher is created.
 // Example:
-// 		file.Watch("/tmp/test.txt", func() {
-// 			fmt.Println("File created or changed")
-// 		}
-// 	)
+//
+//		file.Watch("/tmp/test.txt", func() {
+//			fmt.Println("File created or changed")
+//		}
+//	)
 func Watch(filename string, callback func()) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
