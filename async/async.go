@@ -98,8 +98,8 @@ type next[T any] struct {
 }
 
 func (n *next[T]) Await() (T, error) {
-	result, error := n.await(context.Background())
-	return result, error
+	result, err := n.await(context.Background())
+	return result, err
 }
 
 func (n *next[T]) AwaitWithContext(ctx context.Context) (T, error) {
