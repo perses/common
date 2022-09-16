@@ -100,6 +100,10 @@ type provider struct {
 	provider *trace.TracerProvider
 }
 
+func (p *provider) String() string {
+	return "otel provider"
+}
+
 func (p *provider) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
 	// start provider
 	providerCtx, providerCancelFunc := context.WithCancel(ctx)
