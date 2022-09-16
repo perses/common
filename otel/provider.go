@@ -84,7 +84,7 @@ func (b *Builder) Build() (async.SimpleTask, error) {
 }
 
 func (b *Builder) createDefaultResource() (*resource.Resource, error) {
-	if len(b.serviceName) != 0 {
+	if len(b.serviceName) == 0 {
 		return nil, fmt.Errorf("otel serviceName not set")
 	}
 	return resource.Merge(
