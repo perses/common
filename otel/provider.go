@@ -60,7 +60,7 @@ func (b *Builder) Build() (*trace.TracerProvider, error) {
 	if b.provider != nil {
 		return b.provider, nil
 	}
-	if b.resource != nil {
+	if b.resource == nil {
 		return nil, fmt.Errorf("otel resource is empty, use the default one or set one")
 	}
 	b.provider = trace.NewTracerProvider(
