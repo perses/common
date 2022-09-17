@@ -23,21 +23,18 @@ import (
 )
 
 type Builder struct {
-	serviceName string
-	resource    *resource.Resource
-	exporter    trace.SpanExporter
-	provider    *trace.TracerProvider
-	err         error
+	resource *resource.Resource
+	exporter trace.SpanExporter
+	provider *trace.TracerProvider
+	err      error
 }
 
-func NewBuilder(serviceName string) *Builder {
-	return &Builder{
-		serviceName: serviceName,
-	}
+func NewBuilder() *Builder {
+	return &Builder{}
 }
 
-func (b *Builder) WithDefaultResource() *Builder {
-	b.resource, b.err = b.createDefaultResource()
+func (b *Builder) WithDefaultResource(serviceName string) *Builder {
+	b.resource, b.err = b.createDefaultResource(serviceName)
 	return b
 }
 
@@ -64,11 +61,7 @@ func (b *Builder) Build() (*trace.TracerProvider, error) {
 		return b.provider, nil
 	}
 	if b.resource != nil {
-		res, err := b.createDefaultResource()
-		if err != nil {
-			return nil, err
-		}
-		b.resource = res
+		return nil, fmt.Errorf("otel resource is empty, use the default one or set one")
 	}
 	b.provider = trace.NewTracerProvider(
 		trace.WithBatcher(b.exporter),
@@ -76,14 +69,11 @@ func (b *Builder) Build() (*trace.TracerProvider, error) {
 	return b.provider, nil
 }
 
-func (b *Builder) createDefaultResource() (*resource.Resource, error) {
-	if len(b.serviceName) == 0 {
-		return nil, fmt.Errorf("otel serviceName not set")
-	}
+func (b *Builder) createDefaultResource(serviceName string) (*resource.Resource, error) {
 	return resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(b.serviceName),
+			semconv.ServiceNameKey.String(serviceName),
 			semconv.ServiceVersionKey.String(version.Version)))
 }
