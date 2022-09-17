@@ -51,9 +51,10 @@ import (
 	"github.com/perses/common/async"
 	"github.com/perses/common/async/taskhelper"
 	"github.com/perses/common/echo"
-	"github.com/perses/common/otel"
+	commonOtel "github.com/perses/common/otel"
 	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
 )
 
 var (
@@ -98,7 +99,7 @@ type Runner struct {
 	// helpers is the different helper to execute
 	helpers         []taskhelper.Helper
 	serverBuilder   *echo.Builder
-	providerBuilder *otel.Builder
+	providerBuilder *commonOtel.Builder
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
 	banner           string
@@ -164,9 +165,9 @@ func (r *Runner) HTTPServerBuilder() *echo.Builder {
 	return r.serverBuilder
 }
 
-func (r *Runner) OTeLProviderBuilder() *otel.Builder {
+func (r *Runner) OTeLProviderBuilder() *commonOtel.Builder {
 	if r.providerBuilder == nil {
-		r.providerBuilder = otel.NewBuilder(otelServiceName)
+		r.providerBuilder = commonOtel.NewBuilder(otelServiceName)
 	}
 	return r.providerBuilder
 }
@@ -189,6 +190,19 @@ func (r *Runner) Start() {
 	r.printBannerOrMainHeader()
 	// start to handle the different task
 	r.buildTask()
+	// start the otel provider if built
+	if r.providerBuilder != nil {
+		if provider, otelErr := r.providerBuilder.Build(); otelErr != nil {
+			logrus.WithError(otelErr).Fatal("An error occurred while creating the OTeL provider task")
+		} else {
+			defer func() {
+				if shutdownErr := provider.Shutdown(context.Background()); shutdownErr != nil {
+					logrus.WithError(shutdownErr).Error()
+				}
+			}()
+			otel.SetTracerProvider(provider)
+		}
+	}
 	// create the master context that must be shared by every task
 	ctx, cancel := context.WithCancel(context.Background())
 	// in any case call the cancel method to release any possible resources.
@@ -221,13 +235,6 @@ func (r *Runner) buildTask() {
 			logrus.WithError(err).Fatal("An error occurred while creating the server task")
 		} else {
 			r.tasks = append(r.tasks, serverTask)
-		}
-	}
-	if r.providerBuilder != nil {
-		if providerTask, err := r.providerBuilder.Build(); err != nil {
-			logrus.WithError(err).Fatal("An error occurred while creating the OTeL provider task")
-		} else {
-			r.tasks = append(r.tasks, providerTask)
 		}
 	}
 	// create the signal listener and add it to all others tasks
