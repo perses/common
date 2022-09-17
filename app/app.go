@@ -63,8 +63,7 @@ var (
 	// includes the calling method as a field in the log
 	logMethodTrace bool
 	// http address listened
-	addr            string
-	otelServiceName string
+	addr string
 )
 
 // mainHeader logs the start time and various build information.
@@ -80,7 +79,6 @@ func init() {
 	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
 	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
 	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
-	flag.StringVar(&otelServiceName, "otel.service-name", "", "The service name used when instantiate the OTeL provider")
 }
 
 type cron struct {
@@ -167,7 +165,7 @@ func (r *Runner) HTTPServerBuilder() *echo.Builder {
 
 func (r *Runner) OTeLProviderBuilder() *commonOtel.Builder {
 	if r.providerBuilder == nil {
-		r.providerBuilder = commonOtel.NewBuilder(otelServiceName)
+		r.providerBuilder = commonOtel.NewBuilder()
 	}
 	return r.providerBuilder
 }
