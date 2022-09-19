@@ -54,7 +54,6 @@ import (
 	commonOtel "github.com/perses/common/otel"
 	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
-	"go.opentelemetry.io/otel"
 )
 
 var (
@@ -188,19 +187,6 @@ func (r *Runner) Start() {
 	r.printBannerOrMainHeader()
 	// start to handle the different task
 	r.buildTask()
-	// start the otel provider if built
-	if r.providerBuilder != nil {
-		if provider, otelErr := r.providerBuilder.Build(); otelErr != nil {
-			logrus.WithError(otelErr).Fatal("An error occurred while creating the OTeL provider task")
-		} else {
-			defer func() {
-				if shutdownErr := provider.Shutdown(context.Background()); shutdownErr != nil {
-					logrus.WithError(shutdownErr).Error()
-				}
-			}()
-			otel.SetTracerProvider(provider)
-		}
-	}
 	// create the master context that must be shared by every task
 	ctx, cancel := context.WithCancel(context.Background())
 	// in any case call the cancel method to release any possible resources.
@@ -233,6 +219,14 @@ func (r *Runner) buildTask() {
 			logrus.WithError(err).Fatal("An error occurred while creating the server task")
 		} else {
 			r.tasks = append(r.tasks, serverTask)
+		}
+	}
+	// create the OTeL provider if defined
+	if r.providerBuilder != nil {
+		if providerTask, err := r.providerBuilder.Build(); err != nil {
+			logrus.WithError(err).Fatal("An error occurred while creating the OTeL provider task")
+		} else {
+			r.tasks = append(r.tasks, providerTask)
 		}
 	}
 	// create the signal listener and add it to all others tasks
