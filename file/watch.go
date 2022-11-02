@@ -40,7 +40,7 @@ func Watch(filename string, callback func()) error {
 			case event := <-watcher.Events:
 				// As we are watching the parent directory, we only care
 				// about file creation and changes on the given filename.
-				if event.Has(fsnotify.Write) && filepath.Base(event.Name) == filepath.Base(filename) {
+				if (event.Has(fsnotify.Write) || event.Has(fsnotify.Create)) && filepath.Base(event.Name) == filepath.Base(filename) {
 					callback()
 				}
 			case err := <-watcher.Errors:
