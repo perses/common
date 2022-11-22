@@ -10,7 +10,7 @@ require (
 	github.com/prometheus/common v0.37.0
 	github.com/sirupsen/logrus v1.9.0
 	github.com/stretchr/testify v1.8.1
-	go.etcd.io/etcd/api/v3 v3.5.5
+	go.etcd.io/etcd/api/v3 v3.5.6
 	go.etcd.io/etcd/client/v3 v3.5.5
 	go.opentelemetry.io/otel v1.11.1
 	go.opentelemetry.io/otel/sdk v1.11.1
