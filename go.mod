@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/fsnotify/fsnotify v1.6.0
-	github.com/labstack/echo/v4 v4.10.1
+	github.com/labstack/echo/v4 v4.10.2
 	github.com/nexucis/lamenv v0.4.0
 	github.com/prometheus/client_golang v1.14.0
 	github.com/prometheus/common v0.39.0
