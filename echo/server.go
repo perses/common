@@ -81,6 +81,7 @@ type Register interface {
 
 type Builder struct {
 	metricNamespace    string
+	promRegister       prometheus.Registerer
 	addr               string
 	apis               []Register
 	overrideMiddleware bool
@@ -113,6 +114,11 @@ func (b *Builder) OverrideDefaultMiddleware(override bool) *Builder {
 // MetricNamespace is modifying the namespace that will be used next ot prefix every metrics exposed
 func (b *Builder) MetricNamespace(namespace string) *Builder {
 	b.metricNamespace = namespace
+	return b
+}
+
+func (b *Builder) PrometheusRegisterer(r prometheus.Registerer) *Builder {
+	b.promRegister = r
 	return b
 }
 
@@ -159,13 +165,16 @@ func (b *Builder) build() (*server, error) {
 				},
 			),
 		}
+		if b.promRegister == nil {
+			b.promRegister = prometheus.DefaultRegisterer
+		}
 		if len(b.metricNamespace) > 0 {
 			metricMiddleware, err := persesMiddleware.NewMetrics(b.metricNamespace)
 			if err != nil {
 				return nil, err
 			}
-			prometheus.MustRegister(metricMiddleware)
-			prometheus.MustRegister(version.NewCollector(b.metricNamespace))
+			b.promRegister.MustRegister(metricMiddleware)
+			b.promRegister.MustRegister(version.NewCollector(b.metricNamespace))
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
 
 		}
