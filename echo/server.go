@@ -127,6 +127,22 @@ func (b *Builder) ActivatePprof(activate bool) *Builder {
 }
 
 func (b *Builder) Build() (async.Task, error) {
+	return b.build()
+}
+
+// BuildHandler is creating a http Handler based on the different configuration and attribute set.
+// It can be useful to have it when you want to use the method httptest.NewServer for testing purpose, and you want to have the same setup as the actual http server.
+func (b *Builder) BuildHandler() (http.Handler, error) {
+	s, err := b.build()
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.Initialize()
+	return s.e, err
+}
+
+func (b *Builder) build() (*server, error) {
 	if len(b.apis) == 0 {
 		return nil, fmt.Errorf("no api registered")
 	}
@@ -159,7 +175,6 @@ func (b *Builder) Build() (async.Task, error) {
 	e.HideBanner = true
 	e.HidePort = hidePort
 	return &server{
-		Task:            nil,
 		addr:            b.addr,
 		apis:            b.apis,
 		e:               e,
