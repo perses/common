@@ -2,7 +2,7 @@ name: golangci-lint
 on:
   push:
     branches:
-      - master
+      - main
   pull_request:
 jobs:
   golangci:
@@ -13,9 +13,31 @@ jobs:
       - name: install golang
         uses: actions/setup-go@v4
         with:
-          go-version: 1.19.x
+          go-version: 1.20.x
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v3.4.0
         with:
           # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
-          version: v1.49.0
+          version: v1.52.2
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: install golang
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.20.x
+      - name: test
+        run: "make test"
+  checkformat:
+    name: checkformat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: install golang
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.20.x
+      - name: checkformat
+        run: "make checkformat"
