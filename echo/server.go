@@ -86,6 +86,7 @@ type Builder struct {
 	apis               []Register
 	overrideMiddleware bool
 	mdws               []echo.MiddlewareFunc
+	gzipSkipper        middleware.Skipper
 	activatePprof      bool
 }
 
@@ -111,17 +112,29 @@ func (b *Builder) OverrideDefaultMiddleware(override bool) *Builder {
 	return b
 }
 
+// GzipSkipper can be used to provide a function that will tell when to skip the gzip compression.
+// It can be used to avoid gzip to certain URL(s).
+// The Gzip compression is activated on every URL registered in echo when using the default middleware.
+// If you don't use the default middleware, then there is no point of using this method.
+func (b *Builder) GzipSkipper(skipper middleware.Skipper) *Builder {
+	b.gzipSkipper = skipper
+	return b
+}
+
 // MetricNamespace is modifying the namespace that will be used next ot prefix every metrics exposed
 func (b *Builder) MetricNamespace(namespace string) *Builder {
 	b.metricNamespace = namespace
 	return b
 }
 
+// PrometheusRegisterer will set a new metric registry for Prometheus so it won't used the default one.
+// That can be useful for testing purpose since you can't register in the same go instance the same metrics multiple times.
 func (b *Builder) PrometheusRegisterer(r prometheus.Registerer) *Builder {
 	b.promRegister = r
 	return b
 }
 
+// APIRegistration must be used to register an HTTP API.
 func (b *Builder) APIRegistration(api Register) *Builder {
 	b.apis = append(b.apis, api)
 	return b
@@ -153,6 +166,9 @@ func (b *Builder) build() (*server, error) {
 		return nil, fmt.Errorf("no api registered")
 	}
 	if !b.overrideMiddleware {
+		if b.gzipSkipper == nil {
+			b.gzipSkipper = middleware.DefaultSkipper
+		}
 		defaultMiddleware := []echo.MiddlewareFunc{
 			// Activate recover middleware to recover from panics anywhere in the chain.
 			// It prints stack trace and handles the control to the centralized HTTPErrorHandler.
@@ -161,7 +177,8 @@ func (b *Builder) build() (*server, error) {
 			persesMiddleware.Logger(),
 			middleware.GzipWithConfig(
 				middleware.GzipConfig{
-					Level: 5,
+					Skipper: b.gzipSkipper,
+					Level:   5,
 				},
 			),
 		}
