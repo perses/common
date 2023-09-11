@@ -9,7 +9,7 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: install golang
         uses: actions/setup-go@v4
         with:
@@ -23,7 +23,7 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: install golang
         uses: actions/setup-go@v4
         with:
@@ -34,7 +34,7 @@ jobs:
     name: checkformat
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: install golang
         uses: actions/setup-go@v4
         with:
