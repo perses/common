@@ -152,13 +152,21 @@ type Resolver[T any] interface {
 type configResolver[T any] struct {
 	Resolver[T]
 	prefix         string
+	strict         bool
 	configFile     string
 	data           []byte
 	watchCallbacks []func(*T)
 }
 
 func NewResolver[T any]() Resolver[T] {
-	return &configResolver[T]{}
+	return &configResolver[T]{
+		strict: true,
+	}
+}
+
+func (c *configResolver[T]) Strict(isStrict bool) Resolver[T] {
+	c.strict = isStrict
+	return c
 }
 
 func (c *configResolver[T]) SetEnvPrefix(prefix string) Resolver[T] {
@@ -213,7 +221,10 @@ func (c *configResolver[T]) read(config *T) error {
 		// config can be entirely set from environment
 		return nil
 	}
-	return yaml.UnmarshalStrict(data, config)
+	if c.strict {
+		return yaml.UnmarshalStrict(data, config)
+	}
+	return yaml.Unmarshal(data, config)
 }
 
 func (c *configResolver[T]) watchFile(config *T) {
