@@ -144,6 +144,7 @@ func verifyRec(conf reflect.Value) error {
 type Resolver[T any] interface {
 	SetEnvPrefix(prefix string) Resolver[T]
 	SetConfigFile(filename string) Resolver[T]
+	SetConfigData(data []byte) Resolver[T]
 	AddChangeCallback(func(*T)) Resolver[T]
 	Resolve(config *T) Validator
 }
@@ -152,6 +153,7 @@ type configResolver[T any] struct {
 	Resolver[T]
 	prefix         string
 	configFile     string
+	data           []byte
 	watchCallbacks []func(*T)
 }
 
@@ -170,6 +172,11 @@ func (c *configResolver[T]) SetConfigFile(filename string) Resolver[T] {
 	return c
 }
 
+func (c *configResolver[T]) SetConfigData(data []byte) Resolver[T] {
+	c.data = data
+	return c
+}
+
 // AddChangeCallback is the way to add a callback that will be called when the config is changed
 // The callback will be called with a pointer to the base config with the new values
 func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
@@ -178,10 +185,10 @@ func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 }
 
 func (c *configResolver[T]) Resolve(config *T) Validator {
-	err := c.readFromFile(config)
+	err := c.read(config)
 	if err == nil {
 		err = lamenv.Unmarshal(config, []string{c.prefix})
-		if len(c.watchCallbacks) != 0 {
+		if len(c.watchCallbacks) != 0 && len(c.configFile) != 0 {
 			c.watchFile(config)
 		}
 	}
@@ -191,12 +198,30 @@ func (c *configResolver[T]) Resolve(config *T) Validator {
 	}
 }
 
+func (c *configResolver[T]) read(config *T) error {
+	var data []byte
+	var err error
+	if len(c.configFile) > 0 {
+		data, err = c.readFromFile()
+	} else if len(c.data) > 0 {
+		data = c.data
+	}
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		// config can be entirely set from environment
+		return nil
+	}
+	return yaml.UnmarshalStrict(data, config)
+}
+
 func (c *configResolver[T]) watchFile(config *T) {
 	previousHash, _ := c.hashConfig(config)
 
 	err := file.Watch(c.configFile, func() {
 		var newConfig T
-		err := c.readFromFile(&newConfig)
+		err := c.read(&newConfig)
 		if err != nil {
 			logrus.WithError(err).Errorf("Cannot parse the watched config file %s", c.configFile)
 			return
@@ -220,23 +245,16 @@ func (c *configResolver[T]) watchFile(config *T) {
 	}
 }
 
-func (c *configResolver[T]) readFromFile(config *T) error {
+func (c *configResolver[T]) readFromFile() ([]byte, error) {
 	if len(c.configFile) == 0 {
-		return nil
+		return nil, nil
 	}
 	if _, err := os.Stat(c.configFile); err == nil {
-		// the file exists so we should unmarshal the configuration using yaml
-		data, fileErr := os.ReadFile(c.configFile)
-		if fileErr != nil {
-			return fileErr
-		}
-		if unmarshalErr := yaml.UnmarshalStrict(data, config); unmarshalErr != nil {
-			return unmarshalErr
-		}
+		// the file exists, so we should unmarshal the configuration using yaml
+		return os.ReadFile(c.configFile)
 	} else {
-		return err
+		return nil, err
 	}
-	return nil
 }
 
 func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
@@ -246,10 +264,10 @@ func (c *configResolver[T]) hashConfig(config *T) ([sha1.Size]byte, error) {
 	// tracked by the config, we don't want to notify the change.
 	//
 	// This can happen if the struct is a part of a yaml file,
-	// the change is just a syntax change, or doesn't affect a
+	// the change is just a syntax change, or doesn't affect the
 	// value of the struct (e.g. a comment or a reordering)
 	//
-	// To avoid this, we have to remarshal the unmarshaled struct.
+	// To avoid this; we have to remarshal the unmarshaled struct.
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		logrus.Errorf("Cannot marshal the config: %s", err)
