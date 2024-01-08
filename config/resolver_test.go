@@ -23,6 +23,18 @@ type myConfig struct {
 	Foo foo
 }
 
+type inheritingConfig struct {
+	foo
+	AnotherFieldToSet string
+}
+
+func (c *inheritingConfig) Verify() error {
+	if len(c.AnotherFieldToSet) == 0 {
+		c.AnotherFieldToSet = "set"
+	}
+	return nil
+}
+
 func TestValidatorImpl_VerifyShouldSetDefaultValue(t *testing.T) {
 	mc := &myConfig{}
 	v := &validatorImpl{
@@ -30,6 +42,16 @@ func TestValidatorImpl_VerifyShouldSetDefaultValue(t *testing.T) {
 	}
 	_ = v.Verify()
 	assert.Equal(t, "set", mc.Foo.FieldToSet)
+}
+
+func TestValidatorImpl_VerifyShouldCallChildAndParent(t *testing.T) {
+	mc := &inheritingConfig{}
+	v := &validatorImpl{
+		config: mc,
+	}
+	_ = v.Verify()
+	assert.Equal(t, "set", mc.FieldToSet)
+	assert.Equal(t, "set", mc.AnotherFieldToSet)
 }
 
 func TestResolveImpl_WatchConfigShouldNotifyOnlyWhenValuesChange(t *testing.T) {
