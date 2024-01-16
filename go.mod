@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/labstack/echo/v4 v4.11.4
-	github.com/nexucis/lamenv v0.5.1
+	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.18.0
 	github.com/prometheus/common v0.45.0
 	github.com/sirupsen/logrus v1.9.3
