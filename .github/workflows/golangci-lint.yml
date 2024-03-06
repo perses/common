@@ -9,35 +9,40 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: install golang
-        uses: actions/setup-go@v5
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: perses/github-actions@v0.3.2
+      - uses: ./.github/perses-ci/actions/setup_environment
         with:
-          go-version: 1.20.x
+          enable_go: true
+          enable_go_cache: false
+          enable_npm: false
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v4.0.0
         with:
           # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
-          version: v1.52.2
+          version: v1.56.2
   test:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: install golang
-        uses: actions/setup-go@v5
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: perses/github-actions@v0.3.2
+      - uses: ./.github/perses-ci/actions/setup_environment
         with:
-          go-version: 1.20.x
+          enable_go: true
       - name: test
         run: "make test"
   checkformat:
     name: checkformat
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: install golang
-        uses: actions/setup-go@v5
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: perses/github-actions@v0.3.2
+      - uses: ./.github/perses-ci/actions/setup_environment
         with:
-          go-version: 1.20.x
+          enable_go: true
       - name: checkformat
         run: "make checkformat"
