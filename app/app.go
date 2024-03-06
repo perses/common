@@ -142,7 +142,7 @@ func (r *Runner) WithTasks(t ...interface{}) *Runner {
 }
 
 // WithTimerTask is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
-func (r *Runner) WithTimerTask(duration time.Duration, t ...interface{}) *Runner {
+func (r *Runner) WithTimerTasks(duration time.Duration, t ...interface{}) *Runner {
 	for _, ts := range t {
 		r.timerTasks = append(r.timerTasks, timerTask{
 			task:     ts,
@@ -152,7 +152,7 @@ func (r *Runner) WithTimerTask(duration time.Duration, t ...interface{}) *Runner
 	return r
 }
 
-func (r *Runner) WithCronTask(cronSchedule string, t ...interface{}) *Runner {
+func (r *Runner) WithCronTasks(cronSchedule string, t ...interface{}) *Runner {
 	for _, ts := range t {
 		r.cronTasks = append(r.cronTasks, cronTask{
 			task:     ts,
