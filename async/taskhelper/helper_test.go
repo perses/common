@@ -78,12 +78,16 @@ func TestJoinAll(t *testing.T) {
 	t1, err := New(&simpleTaskImpl{})
 	assert.NoError(t, err)
 	complexTask := &complexTaskImpl{}
-	t2, err := NewCron(complexTask, 5*time.Second)
+	anotherComplexTask := &complexTaskImpl{}
+	t2, err := NewTick(complexTask, 5*time.Second)
+	assert.NoError(t, err)
+	t3, err := NewCron(anotherComplexTask, "@hourly")
 	assert.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	// start all runner
 	Run(ctx, cancel, t1)
 	Run(ctx, cancel, t2)
-	JoinAll(ctx, 30*time.Second, []Helper{t1, t2})
+	Run(ctx, cancel, t3)
+	JoinAll(ctx, 30*time.Second, []Helper{t1, t2, t3})
 	assert.True(t, complexTask.counter >= 2)
 }

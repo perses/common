@@ -80,18 +80,25 @@ func init() {
 	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
 }
 
-type cron struct {
+type timerTask struct {
 	task     interface{}
 	duration time.Duration
+}
+
+type cronTask struct {
+	task     interface{}
+	schedule string
 }
 
 type Runner struct {
 	// waitTimeout is the amount of time to wait before killing the application once it received a cancellation order.
 	waitTimeout time.Duration
-	// cronTasks is the different task that are executed periodically.
-	cronTasks []cron
-	// tasks is the different task that are executed asynchronously only once time.
-	// for each task a async.TaskRunner will be created
+	// cronTasks is the different tasks that are executed according to a specific schedule
+	cronTasks []cronTask
+	// timerTasks is the different tasks that are executed periodically.
+	timerTasks []timerTask
+	// tasks is the different tasks that are executed asynchronously only once time.
+	// for each task an async.TaskRunner will be created
 	tasks []interface{}
 	// helpers is the different helper to execute
 	helpers         []taskhelper.Helper
@@ -118,7 +125,7 @@ func (r *Runner) SetTimeout(timeout time.Duration) *Runner {
 	return r
 }
 
-// SetBanner is setting  a string (ideally the logo of the project) that would be printed when the runner is started.
+// SetBanner is setting a string (ideally the logo of the project) that would be printed when the runner is started.
 // Additionally, you can also print the Version, the BuildTime and the Commit.
 // You just have to add '%s' in your banner where you want to print each information (one '%s' per additional information).
 // If set, then the main header won't be printed. The main header is printing the Version, the Commit and the BuildTime.
@@ -134,12 +141,22 @@ func (r *Runner) WithTasks(t ...interface{}) *Runner {
 	return r
 }
 
-// WithCronTasks is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
-func (r *Runner) WithCronTasks(duration time.Duration, t ...interface{}) *Runner {
+// WithTimerTask is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
+func (r *Runner) WithTimerTask(duration time.Duration, t ...interface{}) *Runner {
 	for _, ts := range t {
-		r.cronTasks = append(r.cronTasks, cron{
+		r.timerTasks = append(r.timerTasks, timerTask{
 			task:     ts,
 			duration: duration,
+		})
+	}
+	return r
+}
+
+func (r *Runner) WithCronTask(cronSchedule string, t ...interface{}) *Runner {
+	for _, ts := range t {
+		r.cronTasks = append(r.cronTasks, cronTask{
+			task:     ts,
+			schedule: cronSchedule,
 		})
 	}
 	return r
@@ -234,8 +251,16 @@ func (r *Runner) buildTask() {
 	r.tasks = append(r.tasks, signalsListener)
 
 	for _, c := range r.cronTasks {
-		if taskHelper, err := taskhelper.NewCron(c.task, c.duration); err != nil {
+		if taskHelper, err := taskhelper.NewCron(c.task, c.schedule); err != nil {
 			logrus.WithError(err).Fatal("unable to create the taskhelper.Helper to handle a cron set")
+		} else {
+			r.helpers = append(r.helpers, taskHelper)
+		}
+	}
+
+	for _, c := range r.timerTasks {
+		if taskHelper, err := taskhelper.NewTick(c.task, c.duration); err != nil {
+			logrus.WithError(err).Fatal("unable to create the taskhelper.Helper to handle a timer set")
 		} else {
 			r.helpers = append(r.helpers, taskHelper)
 		}

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/perses/common/async"
+	"github.com/robfig/cron"
 	"github.com/sirupsen/logrus"
 )
 
@@ -35,14 +36,9 @@ type Helper interface {
 }
 
 func New(task interface{}) (Helper, error) {
-	isSimpleTask := true
-	switch task.(type) {
-	case async.Task:
-		isSimpleTask = false
-	case async.SimpleTask:
-	// just here as sanity check
-	default:
-		return nil, fmt.Errorf("task is not a SimpleTask or a Task")
+	isSimpleTask, err := isSimpleTask(task)
+	if err != nil {
+		return nil, err
 	}
 	return &runner{
 		interval:     0,
@@ -52,20 +48,15 @@ func New(task interface{}) (Helper, error) {
 	}, nil
 }
 
-// NewCron is returning a Helper that will execute the task periodically.
+// NewTick is returning a Helper that will execute the task periodically.
 // The task can be a SimpleTask or a Task. It returns an error if it's something different
-func NewCron(task interface{}, interval time.Duration) (Helper, error) {
+func NewTick(task interface{}, interval time.Duration) (Helper, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("interval cannot be negative or equal to 0 when creating a cron")
 	}
-	isSimpleTask := true
-	switch task.(type) {
-	case async.Task:
-		isSimpleTask = false
-	case async.SimpleTask:
-	// just here as sanity check
-	default:
-		return nil, fmt.Errorf("task is not a SimpleTask or a Task")
+	isSimpleTask, err := isSimpleTask(task)
+	if err != nil {
+		return nil, err
 	}
 	return &runner{
 		interval:     interval,
@@ -75,82 +66,31 @@ func NewCron(task interface{}, interval time.Duration) (Helper, error) {
 	}, nil
 }
 
-type runner struct {
-	Helper
-	// interval is used when the runner is used as a Cron
-	interval time.Duration
-	// task can be a SimpleTask or a Task
-	task         interface{}
-	isSimpleTask bool
-	done         chan struct{}
-}
-
-func (r *runner) Done() <-chan struct{} {
-	return r.done
-}
-
-func (r *runner) String() string {
-	return r.task.(async.SimpleTask).String()
-}
-
-func (r *runner) Start(ctx context.Context, cancelFunc context.CancelFunc) (err error) {
-	// closing this channel will highlight the caller that the task is done.
-	defer close(r.done)
-	childCtx := ctx
-	if !r.isSimpleTask {
-		// childCancelFunc will be used to stop any sub go-routing using the childCtx when the current task is stopped.
-		// it's just to be sure that every sub go-routing created by the task will be stopped without stopping the whole application.
-		var childCancelFunc context.CancelFunc
-		childCtx, childCancelFunc = context.WithCancel(ctx)
-		t := r.task.(async.Task)
-		// then we have to call the finalise method of the task
-		defer func() {
-			childCancelFunc()
-			if finalErr := t.Finalize(); finalErr != nil {
-				if err == nil {
-					err = finalErr
-				} else {
-					logrus.WithError(finalErr).Error("error occurred when calling the method Finalize of the task")
-				}
-			}
-		}()
-
-		// and the initialize method
-		if initError := t.Initialize(); initError != nil {
-			err = fmt.Errorf("unable to call the initialize method of the task: %w", initError)
-			return
-		}
+// NewCron is returning a Helper that will execute the task according to the schedule.
+// cronSchedule is following the standard syntax described here: https://en.wikipedia.org/wiki/Cron.
+// It also supports the predefined scheduling definitions:
+// - @yearly (or @annually) | Run once a year, midnight, Jan. 1st        | 0 0 0 1 1 *
+// - @monthly               | Run once a month, midnight, first of month | 0 0 0 1 * *
+// - @weekly                | Run once a week, midnight between Sat/Sun  | 0 0 0 * * 0
+// - @daily (or @midnight)  | Run once a day, midnight                   | 0 0 0 * * *
+// - @hourly                | Run once an hour, beginning of hour        | 0 0 * * * *
+//
+// We are directly relying on what the library https://pkg.go.dev/github.com/robfig/cron is supporting.
+func NewCron(task interface{}, cronSchedule string) (Helper, error) {
+	sch, err := cron.ParseStandard(cronSchedule)
+	if err != nil {
+		return nil, err
 	}
-
-	// then run the task
-	if executeErr := r.task.(async.SimpleTask).Execute(childCtx, cancelFunc); executeErr != nil {
-		err = fmt.Errorf("unable to call the execute method of the task: %w", executeErr)
-		return
+	isSimpleTask, err := isSimpleTask(task)
+	if err != nil {
+		return nil, err
 	}
-
-	// in case the runner has an interval properly set, then we can create a ticker and call periodically the method execute of the task
-	return r.tick(childCtx, cancelFunc)
-}
-
-func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) error {
-	simpleTask := r.task.(async.SimpleTask)
-	if r.interval <= 0 {
-		return nil
-	}
-
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil {
-				return fmt.Errorf("unable to call the execute method of the task %s: %w", simpleTask.String(), executeErr)
-			}
-		case <-ctx.Done():
-			logrus.Debugf("task %s has been canceled", simpleTask.String())
-			return nil
-		}
-	}
+	return &cronRunner{
+		schedule:     sch,
+		task:         task,
+		isSimpleTask: isSimpleTask,
+		done:         make(chan struct{}),
+	}, nil
 }
 
 // Run is executing in a go-routing the Helper that handles a unique task
@@ -187,4 +127,17 @@ func waitAll(timeout time.Duration, helpers []Helper) {
 		}(helper, timeout)
 	}
 	waitGroup.Wait()
+}
+
+func isSimpleTask(task interface{}) (bool, error) {
+	result := true
+	switch task.(type) {
+	case async.Task:
+		result = false
+	case async.SimpleTask:
+	// just here as sanity check
+	default:
+		return false, fmt.Errorf("task is not a SimpleTask or a Task")
+	}
+	return result, nil
 }
