@@ -2,6 +2,8 @@ module github.com/perses/common
 
 go 1.21
 
+toolchain go1.21.0
+
 require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/labstack/echo/v4 v4.11.4

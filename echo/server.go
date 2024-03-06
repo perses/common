@@ -15,7 +15,7 @@
 // This should be used in the main package only.
 // This package provides a way to build an echo server easily (see https://echo.labstack.com), with a prometheus metrics endpoint and that relies on logrus for logging (see https://github.com/sirupsen/logrus).
 //
-// Please favour the usage of [app](../app) package to run an echo web server.
+// Please favor the usage of [app](../app) package to run an echo web server.
 //
 // # Features
 //
@@ -63,7 +63,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/perses/common/async"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/version"
+	"github.com/prometheus/client_golang/prometheus/collectors/version"
 	"github.com/sirupsen/logrus"
 
 	persesMiddleware "github.com/perses/common/echo/middleware"
