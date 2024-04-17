@@ -169,14 +169,10 @@ func (r *Runner) WithTaskHelpers(t ...taskhelper.Helper) *Runner {
 }
 
 func (r *Runner) WithDefaultHTTPServer(metricNamespace string) *Runner {
-	r.serverBuilder = echo.NewBuilder(addr).
-		APIRegistration(echo.NewMetricsAPI(true, prometheus.DefaultRegisterer)).
-		MetricNamespace(metricNamespace).
-		PrometheusRegisterer(prometheus.DefaultRegisterer)
-	return r
+	return r.WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, prometheus.DefaultRegisterer)
 }
 
-func (r *Runner) WithDefaultHTTPServerAndPrometheusRegistry(metricNamespace string, registerer prometheus.Registerer) *Runner {
+func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace string, registerer prometheus.Registerer) *Runner {
 	r.serverBuilder = echo.NewBuilder(addr).
 		APIRegistration(echo.NewMetricsAPI(true, registerer)).
 		MetricNamespace(metricNamespace).
