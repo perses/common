@@ -169,12 +169,17 @@ func (r *Runner) WithTaskHelpers(t ...taskhelper.Helper) *Runner {
 }
 
 func (r *Runner) WithDefaultHTTPServer(metricNamespace string) *Runner {
-	return r.WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, prometheus.DefaultRegisterer)
+	return r.WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, prometheus.DefaultRegisterer, prometheus.DefaultGatherer)
 }
 
-func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace string, registerer prometheus.Registerer) *Runner {
+// WithDefaultHTTPServerAndPrometheusRegisterer is here to create a default HTTP server with already the metrics API setup.
+// Usually you will use it as follows:
+//
+//	promRegistry := prometheus.NewRegistry()
+//	app.NewRunner().WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, promRegistry, promRegistry)
+func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace string, registerer prometheus.Registerer, gatherer prometheus.Gatherer) *Runner {
 	r.serverBuilder = echo.NewBuilder(addr).
-		APIRegistration(echo.NewMetricsAPI(true, registerer)).
+		APIRegistration(echo.NewMetricsAPI(true, registerer, gatherer)).
 		MetricNamespace(metricNamespace).
 		PrometheusRegisterer(registerer)
 	return r

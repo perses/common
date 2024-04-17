@@ -30,8 +30,11 @@ func init() {
 	flag.StringVar(&telemetryPath, "web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 }
 
-func NewMetricsAPI(disableCompression bool, r prometheus.Registerer) Register {
-	return &metrics{disableCompression: disableCompression, promRegisterer: r}
+func NewMetricsAPI(disableCompression bool, r prometheus.Registerer, gatherer prometheus.Gatherer) Register {
+	return &metrics{
+		disableCompression: disableCompression,
+		promRegisterer:     r,
+		promGatherer:       gatherer}
 }
 
 // metrics is a struct than handles the endpoint /metrics
@@ -44,6 +47,7 @@ type metrics struct {
 	// * https://github.com/prometheus/client_golang/issues/622g
 	disableCompression bool
 	promRegisterer     prometheus.Registerer
+	promGatherer       prometheus.Gatherer
 }
 
 func (m *metrics) RegisterRoute(e *echo.Echo) {
@@ -53,7 +57,7 @@ func (m *metrics) RegisterRoute(e *echo.Echo) {
 	e.GET(telemetryPath, echo.WrapHandler(
 		promhttp.InstrumentMetricHandler(
 			m.promRegisterer, promhttp.HandlerFor(
-				prometheus.DefaultGatherer, promhttp.HandlerOpts{
+				m.promGatherer, promhttp.HandlerOpts{
 					DisableCompression: m.disableCompression,
 				},
 			),
