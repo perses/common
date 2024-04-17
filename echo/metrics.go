@@ -30,25 +30,29 @@ func init() {
 	flag.StringVar(&telemetryPath, "web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 }
 
-func NewMetricsAPI(disableCompression bool) Register {
-	return &metrics{disableCompression: disableCompression}
+func NewMetricsAPI(disableCompression bool, r prometheus.Registerer) Register {
+	return &metrics{disableCompression: disableCompression, promRegisterer: r}
 }
 
 // metrics is a struct than handles the endpoint /metrics
 // It should be used through the Builder like that: Builder.APIRegistration(NewMetricsAPI(true))
 type metrics struct {
 	Register
-	// disableCompression should be used if you are using the gzip middleware at a higher level (meaning that the endpoint /metrics is going to be compression by the middleware).
+	// disableCompression should be used if you are using the gzip middleware at a higher level (meaning that the endpoint /metrics is going to be compressed by the middleware).
 	// The following issues give a bit more context:
 	// * https://github.com/prometheus/prometheus/issues/5085
 	// * https://github.com/prometheus/client_golang/issues/622g
 	disableCompression bool
+	promRegisterer     prometheus.Registerer
 }
 
 func (m *metrics) RegisterRoute(e *echo.Echo) {
+	if m.promRegisterer == nil {
+		m.promRegisterer = prometheus.DefaultRegisterer
+	}
 	e.GET(telemetryPath, echo.WrapHandler(
 		promhttp.InstrumentMetricHandler(
-			prometheus.DefaultRegisterer, promhttp.HandlerFor(
+			m.promRegisterer, promhttp.HandlerFor(
 				prometheus.DefaultGatherer, promhttp.HandlerOpts{
 					DisableCompression: m.disableCompression,
 				},
