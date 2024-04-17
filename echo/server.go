@@ -81,7 +81,7 @@ type Register interface {
 
 type Builder struct {
 	metricNamespace    string
-	promRegister       prometheus.Registerer
+	promRegisterer     prometheus.Registerer
 	addr               string
 	apis               []Register
 	overrideMiddleware bool
@@ -104,8 +104,8 @@ func (b *Builder) Middleware(mdw echo.MiddlewareFunc) *Builder {
 	return b
 }
 
-// OverrideDefaultMiddleware is setting a flag that will tell if the Builder needs to override the default list of middleware considered by the one provided by the method Middleware
-// In case the flag is set at false, then the middleware provided by the user will be append to the default list.
+// OverrideDefaultMiddleware is setting a flag that will tell if the Builder needs to override the default list of middleware considered by the one provided by the method Middleware.
+// In case the flag is set at false, then the middleware provided by the user will be appended to the default list.
 // Note that the default list is always executed at the beginning (a.k.a, the default middleware will be executed before yours).
 func (b *Builder) OverrideDefaultMiddleware(override bool) *Builder {
 	b.overrideMiddleware = override
@@ -127,10 +127,10 @@ func (b *Builder) MetricNamespace(namespace string) *Builder {
 	return b
 }
 
-// PrometheusRegisterer will set a new metric registry for Prometheus so it won't used the default one.
+// PrometheusRegisterer will set a new metric registry for Prometheus, so it won't use the default one.
 // That can be useful for testing purpose since you can't register in the same go instance the same metrics multiple times.
 func (b *Builder) PrometheusRegisterer(r prometheus.Registerer) *Builder {
-	b.promRegister = r
+	b.promRegisterer = r
 	return b
 }
 
@@ -149,7 +149,7 @@ func (b *Builder) Build() (async.Task, error) {
 	return b.build()
 }
 
-// BuildHandler is creating a http Handler based on the different configuration and attribute set.
+// BuildHandler is creating an http Handler based on the different configuration and attribute set.
 // It can be useful to have it when you want to use the method httptest.NewServer for testing purpose, and you want to have the same setup as the actual http server.
 func (b *Builder) BuildHandler() (http.Handler, error) {
 	s, err := b.build()
@@ -182,16 +182,16 @@ func (b *Builder) build() (*server, error) {
 				},
 			),
 		}
-		if b.promRegister == nil {
-			b.promRegister = prometheus.DefaultRegisterer
+		if b.promRegisterer == nil {
+			b.promRegisterer = prometheus.DefaultRegisterer
 		}
 		if len(b.metricNamespace) > 0 {
 			metricMiddleware, err := persesMiddleware.NewMetrics(b.metricNamespace)
 			if err != nil {
 				return nil, err
 			}
-			b.promRegister.MustRegister(metricMiddleware)
-			b.promRegister.MustRegister(version.NewCollector(b.metricNamespace))
+			b.promRegisterer.MustRegister(metricMiddleware)
+			b.promRegisterer.MustRegister(version.NewCollector(b.metricNamespace))
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
 
 		}

@@ -52,6 +52,7 @@ import (
 	"github.com/perses/common/async/taskhelper"
 	"github.com/perses/common/echo"
 	commonOtel "github.com/perses/common/otel"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
 )
@@ -141,7 +142,7 @@ func (r *Runner) WithTasks(t ...interface{}) *Runner {
 	return r
 }
 
-// WithTimerTask is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
+// WithTimerTasks is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
 func (r *Runner) WithTimerTasks(duration time.Duration, t ...interface{}) *Runner {
 	for _, ts := range t {
 		r.timerTasks = append(r.timerTasks, timerTask{
@@ -168,7 +169,14 @@ func (r *Runner) WithTaskHelpers(t ...taskhelper.Helper) *Runner {
 }
 
 func (r *Runner) WithDefaultHTTPServer(metricNamespace string) *Runner {
-	r.serverBuilder = echo.NewBuilder(addr).APIRegistration(echo.NewMetricsAPI(true)).MetricNamespace(metricNamespace)
+	return r.WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, prometheus.DefaultRegisterer)
+}
+
+func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace string, registerer prometheus.Registerer) *Runner {
+	r.serverBuilder = echo.NewBuilder(addr).
+		APIRegistration(echo.NewMetricsAPI(true, registerer)).
+		MetricNamespace(metricNamespace).
+		PrometheusRegisterer(registerer)
 	return r
 }
 
@@ -206,9 +214,9 @@ func (r *Runner) Start() {
 	r.buildTask()
 	// create the master context that must be shared by every task
 	ctx, cancel := context.WithCancel(context.Background())
-	// in any case call the cancel method to release any possible resources.
+	// in any case, call the cancel method to release any possible resources.
 	defer cancel()
-	// launch every runners
+	// launch every runner
 	for _, runner := range r.helpers {
 		taskhelper.Run(ctx, cancel, runner)
 	}
