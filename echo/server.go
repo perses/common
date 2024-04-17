@@ -104,8 +104,8 @@ func (b *Builder) Middleware(mdw echo.MiddlewareFunc) *Builder {
 	return b
 }
 
-// OverrideDefaultMiddleware is setting a flag that will tell if the Builder needs to override the default list of middleware considered by the one provided by the method Middleware
-// In case the flag is set at false, then the middleware provided by the user will be append to the default list.
+// OverrideDefaultMiddleware is setting a flag that will tell if the Builder needs to override the default list of middleware considered by the one provided by the method Middleware.
+// In case the flag is set at false, then the middleware provided by the user will be appended to the default list.
 // Note that the default list is always executed at the beginning (a.k.a, the default middleware will be executed before yours).
 func (b *Builder) OverrideDefaultMiddleware(override bool) *Builder {
 	b.overrideMiddleware = override
