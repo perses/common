@@ -57,6 +57,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"os"
 	"reflect"
@@ -64,7 +65,7 @@ import (
 	"github.com/nexucis/lamenv"
 	"github.com/perses/common/file"
 	"github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 type Validator interface {
@@ -221,10 +222,9 @@ func (c *configResolver[T]) read(config *T) error {
 		// config can be entirely set from environment
 		return nil
 	}
-	if c.strict {
-		return yaml.UnmarshalStrict(data, config)
-	}
-	return yaml.Unmarshal(data, config)
+	d := yaml.NewDecoder(bytes.NewReader(data))
+	d.KnownFields(c.strict)
+	return d.Decode(config)
 }
 
 func (c *configResolver[T]) watchFile(config *T) {
