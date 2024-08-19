@@ -86,6 +86,7 @@ type Builder struct {
 	apis               []Register
 	overrideMiddleware bool
 	mdws               []echo.MiddlewareFunc
+	preMDWs            []echo.MiddlewareFunc
 	gzipSkipper        middleware.Skipper
 	activatePprof      bool
 }
@@ -95,6 +96,13 @@ func NewBuilder(addr string) *Builder {
 		addr:          addr,
 		activatePprof: true,
 	}
+}
+
+// PreMiddleware is adding the provided middleware into the Builder.
+// Each mdw added here, will be executed before the router.
+func (b *Builder) PreMiddleware(mdw echo.MiddlewareFunc) *Builder {
+	b.preMDWs = append(b.preMDWs, mdw)
+	return b
 }
 
 // Middleware is adding the provided middleware into the Builder
@@ -205,6 +213,7 @@ func (b *Builder) build() (*server, error) {
 		apis:            b.apis,
 		e:               e,
 		mdws:            b.mdws,
+		preMDWs:         b.preMDWs,
 		shutdownTimeout: 30 * time.Second,
 		activatePprof:   b.activatePprof,
 	}, nil
@@ -216,6 +225,7 @@ type server struct {
 	apis            []Register
 	e               *echo.Echo
 	mdws            []echo.MiddlewareFunc
+	preMDWs         []echo.MiddlewareFunc
 	shutdownTimeout time.Duration
 	activatePprof   bool
 }
@@ -228,6 +238,9 @@ func (s *server) Initialize() error {
 	// init global middleware
 	// Remove trailing slash middleware a trailing slash from the request URI
 	s.e.Pre(middleware.RemoveTrailingSlash())
+	for _, p := range s.preMDWs {
+		s.e.Pre(p)
+	}
 	for _, mdw := range s.mdws {
 		s.e.Use(mdw)
 	}
