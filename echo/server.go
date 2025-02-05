@@ -69,10 +69,18 @@ import (
 	persesMiddleware "github.com/perses/common/echo/middleware"
 )
 
-var hidePort bool
+var (
+	hidePort bool
+	// https cert for server
+	cert string
+	// https key for server
+	key string
+)
 
 func init() {
 	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
+	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server")
+	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server")
 }
 
 type Register interface {
@@ -212,6 +220,8 @@ func (b *Builder) build() (*server, error) {
 		addr:            b.addr,
 		apis:            b.apis,
 		e:               e,
+		cert:            cert,
+		key:             key,
 		mdws:            b.mdws,
 		preMDWs:         b.preMDWs,
 		shutdownTimeout: 30 * time.Second,
@@ -224,6 +234,8 @@ type server struct {
 	addr            string
 	apis            []Register
 	e               *echo.Echo
+	cert            string
+	key             string
 	mdws            []echo.MiddlewareFunc
 	preMDWs         []echo.MiddlewareFunc
 	shutdownTimeout time.Duration
@@ -257,9 +269,16 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 	serverCtx, serverCancelFunc := context.WithCancel(ctx)
 	go func() {
 		defer serverCancelFunc()
-		if err := s.e.Start(s.addr); err != nil {
-			logrus.WithError(err).Info("http server stopped")
+		if s.cert != "" && s.key != "" {
+			if err := s.e.StartTLS(s.addr, s.cert, s.key); err != nil {
+				logrus.WithError(err).Info("http server stopped")
+			}
+		} else {
+			if err := s.e.Start(s.addr); err != nil {
+				logrus.WithError(err).Info("http server stopped")
+			}
 		}
+
 		logrus.Debug("go routine running the http server has been stopped.")
 	}()
 	// Wait for the end of the task or cancellation
