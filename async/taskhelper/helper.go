@@ -106,10 +106,11 @@ func Run(ctx context.Context, cancelFunc context.CancelFunc, t Helper) {
 // A task that is ended and should stop the whole application, must have called the master cancelFunc shared by every TaskRunner which will closed the master context.
 func JoinAll(ctx context.Context, timeout time.Duration, helpers []Helper) {
 	<-ctx.Done()
-	waitAll(timeout, helpers)
+	WaitAll(timeout, helpers)
 }
 
-func waitAll(timeout time.Duration, helpers []Helper) {
+// WaitAll is waiting for all the helpers to be done or for the timeout to be reached.
+func WaitAll(timeout time.Duration, helpers []Helper) {
 	waitGroup := &sync.WaitGroup{}
 	// set the number of goroutine to wait
 	waitGroup.Add(len(helpers))
