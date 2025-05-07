@@ -3,7 +3,7 @@ module github.com/perses/common
 go 1.22.0
 
 require (
-	github.com/fsnotify/fsnotify v1.8.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/labstack/echo/v4 v4.13.3
 	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.22.0
