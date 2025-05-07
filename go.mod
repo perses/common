@@ -6,7 +6,7 @@ require (
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/labstack/echo/v4 v4.13.3
 	github.com/nexucis/lamenv v0.5.2
-	github.com/prometheus/client_golang v1.21.1
+	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/common v0.63.0
 	github.com/robfig/cron v1.2.0
 	github.com/sirupsen/logrus v1.9.3
@@ -23,7 +23,6 @@ require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
