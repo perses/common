@@ -46,7 +46,7 @@ func TestResolveImpl_WatchConfigShouldNotifyOnlyWhenValuesChange(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	defer os.Remove(configFile)
+	defer os.Remove(configFile) //nolint: errcheck
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -103,7 +103,7 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 		t.Error(err)
 		return
 	}
-	defer os.Remove(configFile)
+	defer os.Remove(configFile) //nolint: errcheck
 
 	time.Sleep(50 * time.Millisecond)
 
