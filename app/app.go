@@ -91,6 +91,21 @@ type cronTask struct {
 	schedule string
 }
 
+func InitLogrus() {
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		logrus.WithError(err).Fatal("unable to set the log.level")
+	}
+	logrus.SetLevel(level)
+	logrus.SetReportCaller(logMethodTrace)
+	logrus.SetFormatter(&logrus.TextFormatter{
+		// Useful when you have a TTY attached.
+		// Issue explained here when this field is set to false by default:
+		// https://github.com/sirupsen/logrus/issues/896
+		FullTimestamp: true,
+	})
+}
+
 type Runner struct {
 	// waitTimeout is the amount of time to wait before killing the application once it received a cancellation order.
 	waitTimeout time.Duration
@@ -201,18 +216,7 @@ func (r *Runner) OTeLProviderBuilder() *commonOtel.Builder {
 
 // Start will start the application. It is a blocking method and will give back the end once every tasks handled are done.
 func (r *Runner) Start() {
-	level, err := logrus.ParseLevel(logLevel)
-	if err != nil {
-		logrus.WithError(err).Fatal("unable to set the log.level")
-	}
-	logrus.SetLevel(level)
-	logrus.SetReportCaller(logMethodTrace)
-	logrus.SetFormatter(&logrus.TextFormatter{
-		// Useful when you have a TTY attached.
-		// Issue explained here when this field is set to false by default:
-		// https://github.com/sirupsen/logrus/issues/896
-		FullTimestamp: true,
-	})
+	InitLogrus()
 	// log the server infos or print the banner
 	r.printBannerOrMainHeader()
 	// start to handle the different task
