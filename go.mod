@@ -7,7 +7,7 @@ require (
 	github.com/labstack/echo/v4 v4.13.4
 	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.22.0
-	github.com/prometheus/common v0.64.0
+	github.com/prometheus/common v0.65.0
 	github.com/robfig/cron v1.2.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.10.0
