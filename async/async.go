@@ -17,18 +17,19 @@
 // It should be used when you need to run multiple asynchronous task and wait for each of them to finish.
 // Example:
 //
-//	 func doneAsync() int {
+//	 func doneAsync() (int, error) {
 //			// asynchronous task
 //			time.Sleep(3 * time.Second)
-//			return 1
+//			return 1, nil
 //		}
 //
 //	 func synchronousTask() {
-//	 	n := async.Async(doneAsync)
-//			// do some other stuff
+//	 	next := async.Async(doneAsync)
+//		// do some other stuff
 //	 	// then wait for the end of the asynchronous task and get back the result
-//	 	result := next.Await()
+//	 	result, err := next.Await()
 //	 	// do something with the result
+//		fmt.Println("got",result,"err",err)
 //	 }
 //
 // It is useful to use this implementation when you want to paralyze quickly some short function like paralyzing multiple HTTP requests.
