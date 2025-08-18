@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/flc1125/go-cron/v4"
 	"github.com/perses/common/async"
-	"github.com/robfig/cron"
 	"github.com/sirupsen/logrus"
 )
 
