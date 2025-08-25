@@ -1,9 +1,9 @@
 module github.com/perses/common
 
-go 1.23.0
+go 1.24.0
 
 require (
-	github.com/flc1125/go-cron/v4 v4.5.7
+	github.com/flc1125/go-cron/v4 v4.6.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/labstack/echo/v4 v4.13.4
 	github.com/nexucis/lamenv v0.5.2
