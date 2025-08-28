@@ -27,7 +27,7 @@ type runner struct {
 	// interval is used when the runner is used as a Cron
 	interval time.Duration
 	// task can be a SimpleTask or a Task
-	task         interface{}
+	task         any
 	isSimpleTask bool
 	done         chan struct{}
 }

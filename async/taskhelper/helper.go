@@ -35,7 +35,7 @@ type Helper interface {
 	Done() <-chan struct{}
 }
 
-func New(task interface{}) (Helper, error) {
+func New(task any) (Helper, error) {
 	isSimpleTask, err := isSimpleTask(task)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func New(task interface{}) (Helper, error) {
 
 // NewTick is returning a Helper that will execute the task periodically.
 // The task can be a SimpleTask or a Task. It returns an error if it's something different
-func NewTick(task interface{}, interval time.Duration) (Helper, error) {
+func NewTick(task any, interval time.Duration) (Helper, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("interval cannot be negative or equal to 0 when creating a cron")
 	}
@@ -76,7 +76,7 @@ func NewTick(task interface{}, interval time.Duration) (Helper, error) {
 // - @hourly                | Run once an hour, beginning of hour        | 0 0 * * * *
 //
 // We are directly relying on what the library https://pkg.go.dev/github.com/robfig/cron is supporting.
-func NewCron(task interface{}, cronSchedule string) (Helper, error) {
+func NewCron(task any, cronSchedule string) (Helper, error) {
 	sch, err := cron.ParseStandard(cronSchedule)
 	if err != nil {
 		return nil, err
@@ -130,7 +130,7 @@ func WaitAll(timeout time.Duration, helpers []Helper) {
 	waitGroup.Wait()
 }
 
-func isSimpleTask(task interface{}) (bool, error) {
+func isSimpleTask(task any) (bool, error) {
 	result := true
 	switch task.(type) {
 	case async.Task:

@@ -75,7 +75,7 @@ type Validator interface {
 type validatorImpl struct {
 	Validator
 	err    error
-	config interface{}
+	config any
 }
 
 // Verify will check if the different attribute of the config is implementing the interface Validator.

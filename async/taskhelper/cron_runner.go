@@ -28,7 +28,7 @@ type cronRunner struct {
 	// schedule is used to now when calling the task
 	schedule cron.Schedule
 	// task can be a SimpleTask or a Task
-	task         interface{}
+	task         any
 	isSimpleTask bool
 	done         chan struct{}
 }
