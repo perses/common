@@ -82,12 +82,12 @@ func init() {
 }
 
 type timerTask struct {
-	task     interface{}
+	task     any
 	duration time.Duration
 }
 
 type cronTask struct {
-	task     interface{}
+	task     any
 	schedule string
 }
 
@@ -115,7 +115,7 @@ type Runner struct {
 	timerTasks []timerTask
 	// tasks is the different tasks that are executed asynchronously only once time.
 	// for each task an async.TaskRunner will be created
-	tasks []interface{}
+	tasks []any
 	// helpers is the different helper to execute
 	helpers         []taskhelper.Helper
 	serverBuilder   *echo.Builder
@@ -123,13 +123,13 @@ type Runner struct {
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
 	banner           string
-	bannerParameters []interface{}
+	bannerParameters []any
 }
 
 func NewRunner() *Runner {
 	return &Runner{
 		waitTimeout:      time.Second * 30,
-		bannerParameters: []interface{}{version.Version, version.Revision, version.BuildDate},
+		bannerParameters: []any{version.Version, version.Revision, version.BuildDate},
 	}
 }
 
@@ -152,13 +152,13 @@ func (r *Runner) SetBanner(banner string) *Runner {
 
 // WithTasks is the way to add different tasks that will be executed asynchronously. If a task ended with no error, it won't necessarily stop the whole application.
 // It will mainly depend on how the task is managing the context passed in parameter.
-func (r *Runner) WithTasks(t ...interface{}) *Runner {
+func (r *Runner) WithTasks(t ...any) *Runner {
 	r.tasks = append(r.tasks, t...)
 	return r
 }
 
 // WithTimerTasks is the way to add different tasks that will be executed periodically at the frequency defined with the duration.
-func (r *Runner) WithTimerTasks(duration time.Duration, t ...interface{}) *Runner {
+func (r *Runner) WithTimerTasks(duration time.Duration, t ...any) *Runner {
 	for _, ts := range t {
 		r.timerTasks = append(r.timerTasks, timerTask{
 			task:     ts,
@@ -168,7 +168,7 @@ func (r *Runner) WithTimerTasks(duration time.Duration, t ...interface{}) *Runne
 	return r
 }
 
-func (r *Runner) WithCronTasks(cronSchedule string, t ...interface{}) *Runner {
+func (r *Runner) WithCronTasks(cronSchedule string, t ...any) *Runner {
 	for _, ts := range t {
 		r.cronTasks = append(r.cronTasks, cronTask{
 			task:     ts,
@@ -238,11 +238,9 @@ func (r *Runner) printBannerOrMainHeader() {
 		mainHeader()
 		return
 	}
-	nbParams := strings.Count(r.banner, "%s")
-	if nbParams > cap(r.bannerParameters) {
+	nbParams := min(strings.Count(r.banner, "%s"),
 		// this verification is to avoid a panic when we truncate the slice bannerParameters with a higher capacity than the one allocated
-		nbParams = cap(r.bannerParameters)
-	}
+		cap(r.bannerParameters))
 	fmt.Printf(r.banner, r.bannerParameters[:nbParams]...)
 }
 
