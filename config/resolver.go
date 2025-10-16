@@ -68,6 +68,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Validator is the interface that a config struct can implement in order to provide a way to verify the configuration
 type Validator interface {
 	Verify() error
 }
@@ -142,6 +143,7 @@ func verifyRec(conf reflect.Value) error {
 	return nil
 }
 
+// Resolver is the interface to set the config file path and the environment variable prefix
 type Resolver[T any] interface {
 	SetEnvPrefix(prefix string) Resolver[T]
 	SetConfigFile(filename string) Resolver[T]
@@ -159,17 +161,20 @@ type configResolver[T any] struct {
 	watchCallbacks []func(*T)
 }
 
+// NewResolver creates a new resolver
 func NewResolver[T any]() Resolver[T] {
 	return &configResolver[T]{
 		strict: true,
 	}
 }
 
+// Strict is set to true to fail if there is an unknown field in the config file (true by default)
 func (c *configResolver[T]) Strict(isStrict bool) Resolver[T] {
 	c.strict = isStrict
 	return c
 }
 
+// SetEnvPrefix is the way to set the prefix of all of your environment variable
 func (c *configResolver[T]) SetEnvPrefix(prefix string) Resolver[T] {
 	c.prefix = prefix
 	return c
@@ -181,24 +186,27 @@ func (c *configResolver[T]) SetConfigFile(filename string) Resolver[T] {
 	return c
 }
 
+// SetConfigData is the way to set the config data directly instead of reading it from a file
 func (c *configResolver[T]) SetConfigData(data []byte) Resolver[T] {
 	c.data = data
 	return c
 }
 
-// AddChangeCallback is the way to add a callback that will be called when the config is changed
-// The callback will be called with a pointer to the base config with the new values
+// AddChangeCallback is used to add a callback that will be called when the config file is changing.
+// Function must be added *before* Resolve() is called. Callbacks are asynchronous and not synchronized.
+// NOTE: If no config file is provided, the callback will never be called.
 func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 	c.watchCallbacks = append(c.watchCallbacks, callback)
 	return c
 }
 
+// Resolve will read the config file if provided, then it will override the config with the environment variable if any
 func (c *configResolver[T]) Resolve(config *T) Validator {
 	err := c.read(config)
 	if err == nil {
 		err = lamenv.Unmarshal(config, []string{c.prefix})
 		if len(c.watchCallbacks) != 0 && len(c.configFile) != 0 {
-			c.watchFile(config)
+			c.watchConfigFile(config)
 		}
 	}
 	return &validatorImpl{
@@ -227,10 +235,16 @@ func (c *configResolver[T]) read(config *T) error {
 	return d.Decode(config)
 }
 
-func (c *configResolver[T]) watchFile(config *T) {
-	previousHash, _ := c.hashConfig(config)
+func (c *configResolver[T]) watchConfigFile(config *T) {
+	previousHash, err := c.hashConfig(config)
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to hash the config file %s", c.configFile)
+		return
+	}
 
-	err := file.Watch(c.configFile, func() {
+	// start watching the file for changes
+	// when a change is detected, we read the file again and compare the hash of the new config with the previous one
+	if file.Watch(c.configFile, func() {
 		var newConfig T
 		err := c.read(&newConfig)
 		if err != nil {
@@ -238,20 +252,18 @@ func (c *configResolver[T]) watchFile(config *T) {
 			return
 		}
 
-		logrus.Debugln("New configuration loaded")
-
 		newHash, _ := c.hashConfig(&newConfig)
 		if previousHash == newHash {
 			return
 		}
 		previousHash = newHash
 
+		logrus.Debugln("New configuration detected")
+
 		for _, callback := range c.watchCallbacks {
 			callback(&newConfig)
 		}
-	})
-
-	if err != nil {
+	}) != nil {
 		logrus.WithError(err).Errorf("Failed to watch the config file %s", c.configFile)
 	}
 }
