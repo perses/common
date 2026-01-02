@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/flc1125/go-cron/v4 v4.7.1
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/labstack/echo/v4 v4.14.0
+	github.com/labstack/echo/v4 v4.15.0
 	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.4
