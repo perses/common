@@ -3,12 +3,12 @@ module github.com/perses/common
 go 1.24.0
 
 require (
-	github.com/flc1125/go-cron/v4 v4.7.1
+	github.com/flc1125/go-cron/v4 v4.7.2
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/labstack/echo/v4 v4.15.0
 	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.23.2
-	github.com/prometheus/common v0.67.4
+	github.com/prometheus/common v0.67.5
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.39.0
@@ -41,5 +41,5 @@ require (
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
