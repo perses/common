@@ -19,8 +19,8 @@ import (
 	"testing"
 )
 
-func TestNewSet(t *testing.T) {
-	set := NewSet(1, 2, 3)
+func TestNew(t *testing.T) {
+	set := New(1, 2, 3)
 	if len(set) != 3 {
 		t.Errorf("Expected set length 3, got %d", len(set))
 	}
@@ -29,17 +29,17 @@ func TestNewSet(t *testing.T) {
 	}
 }
 
-func TestMergeSet(t *testing.T) {
-	set1 := NewSet(1, 2)
-	set2 := NewSet(3, 4)
-	merged := MergeSet(set1, set2)
+func TestMerge(t *testing.T) {
+	set1 := New(1, 2)
+	set2 := New(3, 4)
+	merged := Merge(set1, set2)
 	if len(merged) != 4 {
 		t.Errorf("Expected merged set length 4, got %d", len(merged))
 	}
 }
 
 func TestSetAdd(t *testing.T) {
-	set := NewSet(1, 2)
+	set := New(1, 2)
 	set.Add(3)
 	if !set.Contains(3) {
 		t.Errorf("Set does not contain added element")
@@ -47,7 +47,7 @@ func TestSetAdd(t *testing.T) {
 }
 
 func TestSetRemove(t *testing.T) {
-	set := NewSet(1, 2, 3)
+	set := New(1, 2, 3)
 	set.Remove(2)
 	if set.Contains(2) {
 		t.Errorf("Set still contains removed element")
@@ -55,7 +55,7 @@ func TestSetRemove(t *testing.T) {
 }
 
 func TestSetContains(t *testing.T) {
-	set := NewSet(1, 2, 3)
+	set := New(1, 2, 3)
 	if !set.Contains(2) {
 		t.Errorf("Set does not contain expected element")
 	}
@@ -65,8 +65,8 @@ func TestSetContains(t *testing.T) {
 }
 
 func TestSetMerge(t *testing.T) {
-	set1 := NewSet(1, 2)
-	set2 := NewSet(3, 4)
+	set1 := New(1, 2)
+	set2 := New(3, 4)
 	set1.Merge(set2)
 	if len(set1) != 4 {
 		t.Errorf("Expected merged set length 4, got %d", len(set1))
@@ -74,7 +74,7 @@ func TestSetMerge(t *testing.T) {
 }
 
 func TestSetTransformAsSlice(t *testing.T) {
-	set := NewSet(3, 1, 2)
+	set := New(3, 1, 2)
 	slice := set.TransformAsSlice()
 	if len(slice) != 3 {
 		t.Errorf("Expected slice length 3, got %d", len(slice))
@@ -85,7 +85,7 @@ func TestSetTransformAsSlice(t *testing.T) {
 }
 
 func TestSetMarshalJSON(t *testing.T) {
-	set := NewSet(1, 2, 3)
+	set := New(1, 2, 3)
 	data, err := json.Marshal(set)
 	if err != nil {
 		t.Errorf("Failed to marshal JSON: %v", err)
