@@ -24,7 +24,7 @@ import (
 
 type Set[T comparable] map[T]struct{}
 
-func NewSet[T comparable](vals ...T) Set[T] {
+func New[T comparable](vals ...T) Set[T] {
 	s := Set[T]{}
 	for _, v := range vals {
 		s[v] = struct{}{}
@@ -32,7 +32,9 @@ func NewSet[T comparable](vals ...T) Set[T] {
 	return s
 }
 
-func MergeSet[T comparable](old, new Set[T]) Set[T] {
+// Merge merges two sets, giving priority to the old set in case of conflicts.
+// It will create a new set and leave the input sets unmodified.
+func Merge[T comparable](old, new Set[T]) Set[T] {
 	if new == nil {
 		return old
 	}
@@ -60,6 +62,7 @@ func (s Set[T]) Contains(value T) bool {
 	return ok
 }
 
+// Merge adds all elements from the other set into the current set.
 func (s Set[T]) Merge(other Set[T]) {
 	for v := range other {
 		s.Add(v)
