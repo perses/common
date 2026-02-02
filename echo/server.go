@@ -53,10 +53,12 @@ package echo
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -75,12 +77,85 @@ var (
 	cert string
 	// https key for server
 	key string
+	// TLS minimum version (e.g., "1.2", "1.3")
+	tlsMinVersion string
+	// TLS maximum version (e.g., "1.2", "1.3")
+	tlsMaxVersion string
+	// TLS cipher suites (comma-separated list of cipher suite names)
+	tlsCipherSuites string
 )
 
 func init() {
 	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
 	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server")
 	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server")
+	flag.StringVar(&tlsMinVersion, "web.tls-min-version", "", "Minimum TLS version (e.g., \"1.2\", \"1.3\")")
+	flag.StringVar(&tlsMaxVersion, "web.tls-max-version", "", "Maximum TLS version (e.g., \"1.2\", \"1.3\")")
+	flag.StringVar(&tlsCipherSuites, "web.tls-cipher-suites", "", "Comma-separated list of TLS cipher suite names")
+}
+
+// parseTLSVersion converts a version string (e.g., "1.2", "1.3") to a tls.Version constant.
+// Returns 0 for empty string (not set), or an error for unknown versions.
+func parseTLSVersion(version string) (uint16, error) {
+	if version == "" {
+		return 0, nil
+	}
+	switch version {
+	case "1.0":
+		return tls.VersionTLS10, nil
+	case "1.1":
+		return tls.VersionTLS11, nil
+	case "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, fmt.Errorf("unknown TLS version %q, valid options are: 1.0, 1.1, 1.2, 1.3", version)
+	}
+}
+
+// tlsVersionToString converts a tls.Version constant to its string representation.
+func tlsVersionToString(version uint16) string {
+	switch version {
+	case tls.VersionTLS10:
+		return "1.0"
+	case tls.VersionTLS11:
+		return "1.1"
+	case tls.VersionTLS12:
+		return "1.2"
+	case tls.VersionTLS13:
+		return "1.3"
+	default:
+		return "unknown"
+	}
+}
+
+// parseCipherSuites converts a comma-separated list of cipher suite names to their IDs.
+// Returns nil for empty string (not set), or an error for unknown cipher suite names.
+func parseCipherSuites(suites string) ([]uint16, error) {
+	if suites == "" {
+		return nil, nil
+	}
+
+	// Build a map of cipher suite names to IDs
+	cipherSuiteMap := make(map[string]uint16)
+	for _, cs := range tls.CipherSuites() {
+		cipherSuiteMap[cs.Name] = cs.ID
+	}
+
+	var result []uint16
+	for name := range strings.SplitSeq(suites, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		id, ok := cipherSuiteMap[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown cipher suite %q", name)
+		}
+		result = append(result, id)
+	}
+	return result, nil
 }
 
 type Register interface {
@@ -213,6 +288,27 @@ func (b *Builder) build() (*server, error) {
 		}
 		b.mdws = append(defaultMiddleware, b.mdws...)
 	}
+
+	// Parse TLS options from flags
+	parsedMinVersion, err := parseTLSVersion(tlsMinVersion)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TLS min version: %w", err)
+	}
+	parsedMaxVersion, err := parseTLSVersion(tlsMaxVersion)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TLS max version: %w", err)
+	}
+	parsedCipherSuites, err := parseCipherSuites(tlsCipherSuites)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TLS cipher suites: %w", err)
+	}
+
+	// Validate that min version is not greater than max version
+	if parsedMinVersion != 0 && parsedMaxVersion != 0 && parsedMinVersion > parsedMaxVersion {
+		return nil, fmt.Errorf("TLS min version (%s) cannot be greater than max version (%s)",
+			tlsVersionToString(parsedMinVersion), tlsVersionToString(parsedMaxVersion))
+	}
+
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = hidePort
@@ -222,6 +318,9 @@ func (b *Builder) build() (*server, error) {
 		e:               e,
 		cert:            cert,
 		key:             key,
+		tlsMinVersion:   parsedMinVersion,
+		tlsMaxVersion:   parsedMaxVersion,
+		tlsCipherSuites: parsedCipherSuites,
 		mdws:            b.mdws,
 		preMDWs:         b.preMDWs,
 		shutdownTimeout: 30 * time.Second,
@@ -236,6 +335,9 @@ type server struct {
 	e               *echo.Echo
 	cert            string
 	key             string
+	tlsMinVersion   uint16
+	tlsMaxVersion   uint16
+	tlsCipherSuites []uint16
 	mdws            []echo.MiddlewareFunc
 	preMDWs         []echo.MiddlewareFunc
 	shutdownTimeout time.Duration
@@ -270,6 +372,20 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 	go func() {
 		defer serverCancelFunc()
 		if s.cert != "" && s.key != "" {
+			// Configure custom TLS settings if any are set
+			if s.tlsMinVersion != 0 || s.tlsMaxVersion != 0 || len(s.tlsCipherSuites) > 0 {
+				tlsConfig := &tls.Config{}
+				if s.tlsMinVersion != 0 {
+					tlsConfig.MinVersion = s.tlsMinVersion
+				}
+				if s.tlsMaxVersion != 0 {
+					tlsConfig.MaxVersion = s.tlsMaxVersion
+				}
+				if len(s.tlsCipherSuites) > 0 {
+					tlsConfig.CipherSuites = s.tlsCipherSuites
+				}
+				s.e.TLSServer.TLSConfig = tlsConfig
+			}
 			if err := s.e.StartTLS(s.addr, s.cert, s.key); err != nil {
 				logrus.WithError(err).Info("http server stopped")
 			}
