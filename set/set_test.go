@@ -17,6 +17,9 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"gopkg.in/yaml.v3"
 )
 
 func TestNew(t *testing.T) {
@@ -91,15 +94,41 @@ func TestSetMarshalJSON(t *testing.T) {
 		t.Errorf("Failed to marshal JSON: %v", err)
 	}
 	expected := "[1,2,3]"
-	if string(data) != expected {
-		t.Errorf("Expected JSON %s, got %s", expected, string(data))
-	}
+	assert.Equal(t, expected, string(data))
 }
 
 func TestSetUnmarshalJSON(t *testing.T) {
 	data := "[1,2,3]"
 	var set Set[int]
 	err := json.Unmarshal([]byte(data), &set)
+	if err != nil {
+		t.Errorf("Failed to unmarshal JSON: %v", err)
+	}
+	if len(set) != 3 || !set.Contains(1) || !set.Contains(2) || !set.Contains(3) {
+		t.Errorf("Set does not contain expected elements after unmarshalling")
+	}
+}
+
+func TestSetMarshalYAML(t *testing.T) {
+	set := New(1, 2, 3)
+	data, err := yaml.Marshal(set)
+	if err != nil {
+		t.Errorf("Failed to marshal YAML: %v", err)
+	}
+	expected := `- 1
+- 2
+- 3
+`
+	assert.Equal(t, expected, string(data))
+}
+
+func TestSetUnmarshalYAML(t *testing.T) {
+	data := `- 1
+- 2
+- 3
+`
+	var set Set[int]
+	err := yaml.Unmarshal([]byte(data), &set)
 	if err != nil {
 		t.Errorf("Failed to unmarshal JSON: %v", err)
 	}
