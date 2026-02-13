@@ -106,6 +106,28 @@ func (s *Set[T]) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+func (s Set[T]) MarshalYAML() (any, error) {
+	if len(s) == 0 {
+		return []T{}, nil
+	}
+	return s.TransformAsSlice(), nil
+}
+
+func (s *Set[T]) UnmarshalYAML(unmarshal func(any) error) error {
+	var slice []T
+	if err := unmarshal(&slice); err != nil {
+		return err
+	}
+	if len(slice) == 0 {
+		return nil
+	}
+	*s = make(map[T]struct{}, len(slice))
+	for _, v := range slice {
+		s.Add(v)
+	}
+	return nil
+}
+
 // compare has similar semantics to cmp.Compare except that it works for
 // strings and structs. When comparing Go structs, it only checks the struct
 // fields of string type.
