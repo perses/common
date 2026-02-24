@@ -58,6 +58,8 @@ import (
 )
 
 var (
+	// logFormat is the format to use for logging.
+	logFormat string
 	// level of the log for logrus only
 	logLevel string
 	// includes the calling method as a field in the log
@@ -77,6 +79,7 @@ func mainHeader() {
 
 func init() {
 	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
+	flag.StringVar(&logFormat, "log.format", "text", "log format. Possible value: text, json")
 	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
 	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
 }
@@ -98,12 +101,26 @@ func InitLogrus() {
 	}
 	logrus.SetLevel(level)
 	logrus.SetReportCaller(logMethodTrace)
-	logrus.SetFormatter(&logrus.TextFormatter{
-		// Useful when you have a TTY attached.
-		// Issue explained here when this field is set to false by default:
-		// https://github.com/sirupsen/logrus/issues/896
-		FullTimestamp: true,
-	})
+
+	switch logFormat {
+	case "text":
+		logrus.SetFormatter(&logrus.TextFormatter{
+			// Useful when you have a TTY attached.
+			// Issue explained here when this field is set to false by default:
+			// https://github.com/sirupsen/logrus/issues/896
+			FullTimestamp: true,
+		})
+
+	case "json":
+		logrus.SetFormatter(&logrus.JSONFormatter{
+			// Avoid multi-line JSON logs to make it easier to parse the
+			// structured logs.
+			PrettyPrint: false,
+		})
+
+	default:
+		logrus.Fatalf("unknown log format %q", logFormat)
+	}
 }
 
 type Runner struct {
