@@ -32,6 +32,23 @@ func TestValidatorImpl_VerifyShouldSetDefaultValue(t *testing.T) {
 	assert.Equal(t, "set", mc.Foo.FieldToSet)
 }
 
+func TestResolveImpl_EmptyEnvPrefix(t *testing.T) {
+	type Config struct {
+		FieldByEnv1 string `yaml:"fieldbyenv1"`
+	}
+	var config Config
+
+	_ = os.Setenv("FIELDBYENV1", "value")
+
+	err := NewResolver[Config]().
+		SetConfigData([]byte("")).
+		Resolve(&config).
+		Verify()
+
+	assert.NoError(t, err)
+	assert.Equal(t, "value", config.FieldByEnv1)
+}
+
 func TestResolveImpl_WatchConfigShouldNotifyOnlyWhenValuesChange(t *testing.T) {
 	type Config struct {
 		Field1 string `yaml:"field1"`
