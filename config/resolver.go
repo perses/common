@@ -204,7 +204,11 @@ func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 func (c *configResolver[T]) Resolve(config *T) Validator {
 	err := c.read(config)
 	if err == nil {
-		err = lamenv.Unmarshal(config, []string{c.prefix})
+		var parts []string
+		if len(c.prefix) > 0 {
+			parts = []string{c.prefix}
+		}
+		err = lamenv.Unmarshal(config, parts)
 		if len(c.watchCallbacks) != 0 && len(c.configFile) != 0 {
 			c.watchConfigFile(config)
 		}
