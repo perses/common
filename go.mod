@@ -1,11 +1,11 @@
 module github.com/perses/common
 
-go 1.24.0
+go 1.25.0
 
 require (
-	github.com/flc1125/go-cron/v4 v4.7.2
+	github.com/flc1125/go-cron/v4 v4.8.0
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/labstack/echo/v4 v4.15.0
+	github.com/labstack/echo/v4 v4.15.1
 	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.5
