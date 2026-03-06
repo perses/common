@@ -62,6 +62,7 @@ import (
 func InitFlag() {
 	commonLogrus.InitFlag()
 	echo.InitFlag()
+	echo.InitTelemetryPathFlag()
 }
 
 // mainHeader logs the start time and various build information.

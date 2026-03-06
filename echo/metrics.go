@@ -21,13 +21,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+const defaultTelemetryPath = "/metrics"
+
 var (
 	// http path for telemetry exposition
 	telemetryPath string
 )
 
-func init() {
-	flag.StringVar(&telemetryPath, "web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+func InitTelemetryPathFlag() {
+	flag.StringVar(&telemetryPath, "web.telemetry-path", defaultTelemetryPath, "Path under which to expose metrics.")
 }
 
 func NewMetricsAPI(disableCompression bool, r prometheus.Registerer, gatherer prometheus.Gatherer) Register {
@@ -53,6 +55,9 @@ type metrics struct {
 func (m *metrics) RegisterRoute(e *echo.Echo) {
 	if m.promRegisterer == nil {
 		m.promRegisterer = prometheus.DefaultRegisterer
+	}
+	if len(telemetryPath) == 0 {
+		telemetryPath = defaultTelemetryPath
 	}
 	e.GET(telemetryPath, echo.WrapHandler(
 		promhttp.InstrumentMetricHandler(
