@@ -71,7 +71,12 @@ import (
 	persesMiddleware "github.com/perses/common/echo/middleware"
 )
 
+const defaultAddr = ":8080"
+
 var (
+	// http address listened
+	addr string
+	// hide port when printing the server status on stdout
 	hidePort bool
 	// https cert for server
 	cert string
@@ -85,7 +90,8 @@ var (
 	tlsCipherSuites string
 )
 
-func init() {
+func InitFlag() {
+	flag.StringVar(&addr, "web.listen-address", defaultAddr, "The address to listen on for HTTP requests, web interface and telemetry.")
 	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
 	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server")
 	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server")
@@ -174,11 +180,14 @@ type Builder struct {
 	activatePprof      bool
 }
 
-func NewBuilder(addr string) *Builder {
+func NewBuilder() *Builder {
 	return &Builder{
-		addr:          addr,
 		activatePprof: true,
 	}
+}
+
+func (b *Builder) ListenAddress(addr string) {
+	b.addr = addr
 }
 
 // PreMiddleware is adding the provided middleware into the Builder.
@@ -255,6 +264,12 @@ func (b *Builder) BuildHandler() (http.Handler, error) {
 func (b *Builder) build() (*server, error) {
 	if len(b.apis) == 0 {
 		return nil, fmt.Errorf("no api registered")
+	}
+	if len(b.addr) == 0 {
+		b.addr = addr
+		if len(addr) == 0 {
+			b.addr = defaultAddr
+		}
 	}
 	if !b.overrideMiddleware {
 		if b.gzipSkipper == nil {
