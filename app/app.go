@@ -42,7 +42,6 @@ package app
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"strings"
 	"syscall"
@@ -51,22 +50,19 @@ import (
 	"github.com/perses/common/async"
 	"github.com/perses/common/async/taskhelper"
 	"github.com/perses/common/echo"
+	commonLogrus "github.com/perses/common/logrus"
 	commonOtel "github.com/perses/common/otel"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/version"
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	// logFormat is the format to use for logging.
-	logFormat string
-	// level of the log for logrus only
-	logLevel string
-	// includes the calling method as a field in the log
-	logMethodTrace bool
-	// http address listened
-	addr string
-)
+// InitFlag is initializing the flag for logrus config and for the echo server
+// This is an opinionated function, use it only if you are using logrus and echo server.
+func InitFlag() {
+	commonLogrus.InitFlag()
+	echo.InitFlag()
+}
 
 // mainHeader logs the start time and various build information.
 func mainHeader() {
@@ -77,13 +73,6 @@ func mainHeader() {
 	logrus.Info("------------")
 }
 
-func init() {
-	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
-	flag.StringVar(&logFormat, "log.format", "text", "log format. Possible value: text, json")
-	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
-	flag.StringVar(&addr, "web.listen-address", ":8080", "The address to listen on for HTTP requests, web interface and telemetry.")
-}
-
 type timerTask struct {
 	task     any
 	duration time.Duration
@@ -92,35 +81,6 @@ type timerTask struct {
 type cronTask struct {
 	task     any
 	schedule string
-}
-
-func InitLogrus() {
-	level, err := logrus.ParseLevel(logLevel)
-	if err != nil {
-		logrus.WithError(err).Fatal("unable to set the log.level")
-	}
-	logrus.SetLevel(level)
-	logrus.SetReportCaller(logMethodTrace)
-
-	switch logFormat {
-	case "text":
-		logrus.SetFormatter(&logrus.TextFormatter{
-			// Useful when you have a TTY attached.
-			// Issue explained here when this field is set to false by default:
-			// https://github.com/sirupsen/logrus/issues/896
-			FullTimestamp: true,
-		})
-
-	case "json":
-		logrus.SetFormatter(&logrus.JSONFormatter{
-			// Avoid multi-line JSON logs to make it easier to parse the
-			// structured logs.
-			PrettyPrint: false,
-		})
-
-	default:
-		logrus.Fatalf("unknown log format %q", logFormat)
-	}
 }
 
 type Runner struct {
@@ -134,9 +94,13 @@ type Runner struct {
 	// for each task an async.TaskRunner will be created
 	tasks []any
 	// helpers is the different helper to execute
-	helpers         []taskhelper.Helper
-	serverBuilder   *echo.Builder
+	helpers []taskhelper.Helper
+	// Builder handling the configuration of the echo HTTP server
+	serverBuilder *echo.Builder
+	// Builder handling the otel configuration
 	providerBuilder *commonOtel.Builder
+	// Builder handling the logrus configuration
+	logrusBuilder *commonLogrus.Builder
 	// banner is just a string (ideally the logo of the project) that would be printed when the runner is started
 	// If set, then the main header won't be printed.
 	banner           string
@@ -210,7 +174,7 @@ func (r *Runner) WithDefaultHTTPServer(metricNamespace string) *Runner {
 //	promRegistry := prometheus.NewRegistry()
 //	app.NewRunner().WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, promRegistry, promRegistry)
 func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace string, registerer prometheus.Registerer, gatherer prometheus.Gatherer) *Runner {
-	r.serverBuilder = echo.NewBuilder(addr).
+	r.serverBuilder = echo.NewBuilder().
 		APIRegistration(echo.NewMetricsAPI(true, registerer, gatherer)).
 		MetricNamespace(metricNamespace).
 		PrometheusRegisterer(registerer)
@@ -219,7 +183,7 @@ func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace st
 
 func (r *Runner) HTTPServerBuilder() *echo.Builder {
 	if r.serverBuilder == nil {
-		r.serverBuilder = echo.NewBuilder(addr)
+		r.serverBuilder = echo.NewBuilder()
 	}
 	return r.serverBuilder
 }
@@ -231,9 +195,29 @@ func (r *Runner) OTeLProviderBuilder() *commonOtel.Builder {
 	return r.providerBuilder
 }
 
+func (r *Runner) LogrusBuilder() *commonLogrus.Builder {
+	if r.logrusBuilder == nil {
+		r.logrusBuilder = commonLogrus.NewBuilder()
+	}
+	return r.logrusBuilder
+}
+
+// WithDefaultLogrusBuilder is just initializing the logrus builder without returning it.
+// Use this one if you are configuring logrus through the flag. Then don't forget to call logrus.InitFlag before parsing the flag.
+// If you want to configure manually logrus, call LogrusBuilder instead.
+func (r *Runner) WithDefaultLogrusBuilder() *Runner {
+	if r.logrusBuilder == nil {
+		r.logrusBuilder = commonLogrus.NewBuilder()
+	}
+	return r
+}
+
 // Start will start the application. It is a blocking method and will give back the end once every tasks handled are done.
 func (r *Runner) Start() {
-	InitLogrus()
+	// build the logrus config if exists
+	if r.logrusBuilder != nil {
+		r.logrusBuilder.SetUp()
+	}
 	// log the server infos or print the banner
 	r.printBannerOrMainHeader()
 	// start to handle the different task

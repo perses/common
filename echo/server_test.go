@@ -291,7 +291,7 @@ func TestBuild_TLSVersionValidation(t *testing.T) {
 				tlsMaxVersion = origMaxVersion
 			}()
 
-			builder := NewBuilder(":8080").
+			builder := NewBuilder().
 				APIRegistration(&mockRegister{}).
 				OverrideDefaultMiddleware(true)
 
@@ -340,7 +340,7 @@ func TestBuild_TLSCipherSuitesValidation(t *testing.T) {
 				tlsCipherSuites = origCipherSuites
 			}()
 
-			builder := NewBuilder(":8080").
+			builder := NewBuilder().
 				APIRegistration(&mockRegister{}).
 				OverrideDefaultMiddleware(true)
 
@@ -382,7 +382,7 @@ func TestBuild_TLSFlagValues(t *testing.T) {
 	// Create a fresh registry to avoid duplicate registration errors
 	reg := prometheus.NewRegistry()
 
-	builder := NewBuilder(":8080").
+	builder := NewBuilder().
 		APIRegistration(&mockRegister{}).
 		PrometheusRegisterer(reg)
 
