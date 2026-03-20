@@ -3,7 +3,7 @@ module github.com/perses/common
 go 1.25.0
 
 require (
-	github.com/flc1125/go-cron/v4 v4.8.0
+	github.com/flc1125/go-cron/v4 v4.8.1
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/nexucis/lamenv v0.5.2
