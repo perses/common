@@ -23,7 +23,7 @@ type format string
 
 const (
 	jsonFormat format = "json"
-	txtFormat  format = "txt"
+	txtFormat  format = "text"
 )
 
 var (
@@ -37,7 +37,7 @@ var (
 
 func InitFlag() {
 	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
-	flag.StringVar((*string)(&logFormat), "log.format", "text", "log format. Possible value: text, json")
+	flag.StringVar((*string)(&logFormat), "log.format", string(txtFormat), "log format. Possible value: text, json")
 	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
 }
 
@@ -46,7 +46,7 @@ func NewBuilder() *Builder {
 }
 
 type Builder struct {
-	level       logrus.Level
+	level       *logrus.Level
 	format      format
 	methodTrace bool
 }
@@ -56,7 +56,7 @@ func (b *Builder) Level(level string) *Builder {
 	if err != nil {
 		logrus.Warnf("Invalid log level: %s", level)
 	} else {
-		b.level = l
+		b.level = &l
 	}
 	return b
 }
@@ -78,7 +78,7 @@ func (b *Builder) MethodTrace(enable bool) *Builder {
 // SetUp is configuring the global instance of logrus.
 func (b *Builder) SetUp() {
 	b.build()
-	logrus.SetLevel(b.level)
+	logrus.SetLevel(*b.level)
 	logrus.SetReportCaller(b.methodTrace)
 
 	switch b.format {
@@ -105,14 +105,13 @@ func (b *Builder) SetUp() {
 // build will fill up any missing attribute based on the flag or if the flags are not used, then it will use default value
 func (b *Builder) build() {
 	// Manage the log level
-	if len(b.level.String()) == 0 {
+	if b.level == nil {
 		level, err := logrus.ParseLevel(logLevel)
 		if err != nil {
 			logrus.Warnf("Invalid log level from flag value: %s", level)
-			b.level = logrus.InfoLevel
-		} else {
-			b.level = level
+			level = logrus.InfoLevel
 		}
+		b.level = &level
 	}
 	// Manage the method trace
 	if !b.methodTrace {
