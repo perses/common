@@ -31,6 +31,7 @@ var defaultLoggerConfig = LoggerConfig{
 	BlackListEndpoint: []string{
 		"metrics",
 		"favicon",
+		"debug/pprof",
 	},
 }
 
