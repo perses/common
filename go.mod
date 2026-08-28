@@ -1,15 +1,15 @@
 module github.com/perses/common
 
-go 1.25.0
+go 1.26.0
 
 require (
-	github.com/flc1125/go-cron/v4 v4.11.0
+	github.com/flc1125/go-cron/v4 v4.12.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/nexucis/lamenv v0.5.2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/common v0.70.1
-	github.com/sirupsen/logrus v1.10.0
+	github.com/sirupsen/logrus v1.10.1
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
