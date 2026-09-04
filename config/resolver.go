@@ -103,7 +103,7 @@ func checkPointer(ptr reflect.Value) error {
 
 func verifyRec(conf reflect.Value) error {
 	v := conf
-	if conf.Kind() != reflect.Ptr {
+	if conf.Kind() != reflect.Pointer {
 		// that means it's not a pointer, so we have to create one to be able to then know if it implements the interface Validator
 		ptr := reflect.New(v.Type())
 		ptr.Elem().Set(v)
