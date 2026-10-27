@@ -93,8 +93,8 @@ var (
 func InitFlag() {
 	flag.StringVar(&addr, "web.listen-address", defaultAddr, "The address to listen on for HTTP requests, web interface and telemetry.")
 	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
-	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server")
-	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server")
+	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server. It is reloaded when the file changes.")
+	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server. It is reloaded when the file changes.")
 	flag.StringVar(&tlsMinVersion, "web.tls-min-version", "", "Minimum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsMaxVersion, "web.tls-max-version", "", "Maximum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsCipherSuites, "web.tls-cipher-suites", "", "Comma-separated list of TLS cipher suite names")
@@ -387,21 +387,7 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 	go func() {
 		defer serverCancelFunc()
 		if s.cert != "" && s.key != "" {
-			// Configure custom TLS settings if any are set
-			if s.tlsMinVersion != 0 || s.tlsMaxVersion != 0 || len(s.tlsCipherSuites) > 0 {
-				tlsConfig := &tls.Config{}
-				if s.tlsMinVersion != 0 {
-					tlsConfig.MinVersion = s.tlsMinVersion
-				}
-				if s.tlsMaxVersion != 0 {
-					tlsConfig.MaxVersion = s.tlsMaxVersion
-				}
-				if len(s.tlsCipherSuites) > 0 {
-					tlsConfig.CipherSuites = s.tlsCipherSuites
-				}
-				s.e.TLSServer.TLSConfig = tlsConfig
-			}
-			if err := s.e.StartTLS(s.addr, s.cert, s.key); err != nil {
+			if err := s.startTLS(); err != nil {
 				logrus.WithError(err).Info("http server stopped")
 			}
 		} else {
@@ -427,6 +413,27 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 		logrus.Debug("server cancellation requested")
 	}
 	return nil
+}
+
+// startTLS starts the HTTPS server.
+// echo.StartTLS is not used because it replaces the TLS configuration, and it loads the certificate only once.
+func (s *server) startTLS() error {
+	reloader, err := newCertificateReloader(s.cert, s.key)
+	if err != nil {
+		return err
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:     s.tlsMinVersion,
+		MaxVersion:     s.tlsMaxVersion,
+		CipherSuites:   s.tlsCipherSuites,
+		GetCertificate: reloader.GetCertificate,
+	}
+	if !s.e.DisableHTTP2 {
+		tlsConfig.NextProtos = []string{"h2"}
+	}
+	s.e.TLSServer.Addr = s.addr
+	s.e.TLSServer.TLSConfig = tlsConfig
+	return s.e.StartServer(s.e.TLSServer)
 }
 
 func (s *server) Finalize() error {
