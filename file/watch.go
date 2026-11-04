@@ -44,6 +44,7 @@ func Watch(filename string, callback func()) error {
 }
 
 // WatchWithContext is like Watch, but it stops watching the file once the context is done.
+// The callback is not called anymore once the context is done, but a call in progress is not waited for.
 func WatchWithContext(ctx context.Context, filename string, callback func()) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -51,7 +52,8 @@ func WatchWithContext(ctx context.Context, filename string, callback func()) err
 	}
 	// Watch the parent directory of the given filename.
 	// Fix a bug with fsnotify if the file does not exist.
-	if err = watcher.Add(filepath.Dir(filename)); err != nil {
+	dir := filepath.Dir(filename)
+	if err = watcher.Add(dir); err != nil {
 		_ = watcher.Close()
 		return err
 	}
@@ -59,11 +61,11 @@ func WatchWithContext(ctx context.Context, filename string, callback func()) err
 	// No event is received for the file itself in that case, so its target is tracked to detect these changes.
 	// It is resolved before returning, so a change made right after is detected.
 	target, _ := filepath.EvalSymlinks(filename)
-	go watch(ctx, watcher, filename, target, callback)
+	go watch(ctx, watcher, dir, filename, target, callback)
 	return nil
 }
 
-func watch(ctx context.Context, watcher *fsnotify.Watcher, filename string, target string, callback func()) {
+func watch(ctx context.Context, watcher *fsnotify.Watcher, dir string, filename string, target string, callback func()) {
 	defer func() {
 		if err := watcher.Close(); err != nil {
 			logrus.WithError(err).Errorf("Unable to close the watcher of the file %s", filename)
@@ -75,6 +77,8 @@ func watch(ctx context.Context, watcher *fsnotify.Watcher, filename string, targ
 	// pending is true when the debounce timer is running.
 	pending := false
 	fileChanged := false
+	// rewatch is true when the watched directory has been removed or renamed.
+	rewatch := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -82,6 +86,12 @@ func watch(ctx context.Context, watcher *fsnotify.Watcher, filename string, targ
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return
+			}
+			// When the parent directory is a symlink (like the directory of a nested path in a Kubernetes ConfigMap),
+			// the directory it was targeting is watched. Once this directory is removed, it is not watched anymore,
+			// so the parent directory must be watched again to follow its new target.
+			if filepath.Clean(event.Name) == dir && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				rewatch = true
 			}
 			// As we are watching the parent directory, we only care
 			// about file creation and changes on the given filename.
@@ -96,7 +106,16 @@ func watch(ctx context.Context, watcher *fsnotify.Watcher, filename string, targ
 				debounce.Reset(debounceDelay)
 			}
 		case <-debounce.C:
+			if ctx.Err() != nil {
+				return
+			}
 			pending = false
+			if rewatch {
+				rewatch = false
+				if err := watcher.Add(dir); err != nil {
+					logrus.WithError(err).Errorf("Unable to watch again the directory of the file %s", filename)
+				}
+			}
 			if currentTarget, err := filepath.EvalSymlinks(filename); err == nil && currentTarget != target {
 				target = currentTarget
 				fileChanged = true

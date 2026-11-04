@@ -88,6 +88,34 @@ func TestWatch_SymlinkTargetChanges(t *testing.T) {
 	assert.Eventually(t, func() bool { return calls.Load() == 1 }, waitFor, tick)
 }
 
+// TestWatch_NestedSymlinkTargetChanges reproduces how Kubernetes updates a ConfigMap item with a nested path (like sub/config.yaml):
+// the parent directory of the file is a symlink to ..data/sub, so the directory actually watched is removed after each update.
+func TestWatch_NestedSymlinkTargetChanges(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the update of a symlink by a rename is only reliably reported by inotify")
+	}
+	dir := t.TempDir()
+	for _, version := range []string{"..v1", "..v2", "..v3"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, version, "sub"), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, version, "sub", "config.yaml"), []byte(version), 0600))
+	}
+	require.NoError(t, os.Symlink("..v1", filepath.Join(dir, "..data")))
+	require.NoError(t, os.Symlink(filepath.Join("..data", "sub"), filepath.Join(dir, "sub")))
+	calls := watchFile(t, filepath.Join(dir, "sub", "config.yaml"))
+
+	// Like Kubernetes, the ..data symlink is atomically replaced, then the previous version is removed.
+	update := func(previous, next string) {
+		require.NoError(t, os.Symlink(next, filepath.Join(dir, "..data_tmp")))
+		require.NoError(t, os.Rename(filepath.Join(dir, "..data_tmp"), filepath.Join(dir, "..data")))
+		require.NoError(t, os.RemoveAll(filepath.Join(dir, previous)))
+	}
+	update("..v1", "..v2")
+	assert.Eventually(t, func() bool { return calls.Load() == 1 }, waitFor, tick)
+	// The next updates must be detected as well.
+	update("..v2", "..v3")
+	assert.Eventually(t, func() bool { return calls.Load() == 2 }, waitFor, tick)
+}
+
 func TestWatchWithContext_Stop(t *testing.T) {
 	filename := filepath.Join(t.TempDir(), "config.yaml")
 	ctx, cancel := context.WithCancel(context.Background())
