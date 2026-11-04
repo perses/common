@@ -194,6 +194,8 @@ func (c *configResolver[T]) SetConfigData(data []byte) Resolver[T] {
 
 // AddChangeCallback is used to add a callback that will be called when the config file is changing.
 // Function must be added *before* Resolve() is called. Callbacks are asynchronous and not synchronized.
+// The new config is resolved like the initial one (the environment variables override the config file), and it is verified.
+// If the new config is invalid, the change is logged and ignored.
 // NOTE: If no config file is provided, the callback will never be called.
 func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 	c.watchCallbacks = append(c.watchCallbacks, callback)
@@ -204,11 +206,7 @@ func (c *configResolver[T]) AddChangeCallback(callback func(*T)) Resolver[T] {
 func (c *configResolver[T]) Resolve(config *T) Validator {
 	err := c.read(config)
 	if err == nil {
-		var parts []string
-		if len(c.prefix) > 0 {
-			parts = []string{c.prefix}
-		}
-		err = lamenv.Unmarshal(config, parts)
+		err = c.unmarshalEnv(config)
 		if len(c.watchCallbacks) != 0 && len(c.configFile) != 0 {
 			c.watchConfigFile(config)
 		}
@@ -239,6 +237,15 @@ func (c *configResolver[T]) read(config *T) error {
 	return d.Decode(config)
 }
 
+// unmarshalEnv overrides the config with the environment variables.
+func (c *configResolver[T]) unmarshalEnv(config *T) error {
+	var parts []string
+	if len(c.prefix) > 0 {
+		parts = []string{c.prefix}
+	}
+	return lamenv.Unmarshal(config, parts)
+}
+
 func (c *configResolver[T]) watchConfigFile(config *T) {
 	previousHash, err := c.hashConfig(config)
 	if err != nil {
@@ -255,6 +262,11 @@ func (c *configResolver[T]) watchConfigFile(config *T) {
 			logrus.WithError(err).Errorf("Cannot parse the watched config file %s", c.configFile)
 			return
 		}
+		// The new config must be resolved like the initial one: the environment variables override the file.
+		if err = c.unmarshalEnv(&newConfig); err != nil {
+			logrus.WithError(err).Errorf("Cannot apply the environment variables on the watched config file %s", c.configFile)
+			return
+		}
 
 		newHash, _ := c.hashConfig(&newConfig)
 		if previousHash == newHash {
@@ -263,6 +275,13 @@ func (c *configResolver[T]) watchConfigFile(config *T) {
 		previousHash = newHash
 
 		logrus.Debugln("New configuration detected")
+
+		// Like the initial config, the new one is verified, and the default values are set.
+		// An invalid config is never passed to the callbacks.
+		if err = (&validatorImpl{config: &newConfig}).Verify(); err != nil {
+			logrus.WithError(err).Errorf("The watched config file %s is invalid, the change is ignored", c.configFile)
+			return
+		}
 
 		for _, callback := range c.watchCallbacks {
 			callback(&newConfig)
