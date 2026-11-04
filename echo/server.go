@@ -54,6 +54,7 @@ package echo
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -384,33 +385,30 @@ func (s *server) Initialize() error {
 
 func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
 	// start server
-	serverCtx, serverCancelFunc := context.WithCancel(ctx)
+	// The channel is buffered, so the go routine is not blocked when the server is stopped after the end of this method.
+	serverErr := make(chan error, 1)
 	go func() {
-		defer serverCancelFunc()
+		var err error
 		if s.cert != "" && s.key != "" {
-			if err := s.startTLS(); err != nil {
-				logrus.WithError(err).Info("http server stopped")
-			}
+			err = s.startTLS()
 		} else {
-			if err := s.e.Start(s.addr); err != nil {
-				logrus.WithError(err).Info("http server stopped")
-			}
+			err = s.e.Start(s.addr)
 		}
-
 		logrus.Debug("go routine running the http server has been stopped.")
+		serverErr <- err
 	}()
 	// Wait for the end of the task or cancellation
 	select {
-	case <-serverCtx.Done():
-		// Server ended unexpectedly
+	case err := <-serverErr:
+		// Server ended unexpectedly (for example, the address is already in use, or the TLS certificate cannot be loaded)
 		// In our ecosystem, as we are producing each time an HTTP API, if the HTTP api stopped, we want to stop the whole application.
 		// That's why we are calling the parent cancelFunc
 		cancelFunc()
-		// as it is possible that the serverCtx.Done() is closed because the main cancelFunc() has been called by another go routing,
-		// we should try to close properly the http server
-		// Note: that's why we don't return any error here.
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server stopped unexpectedly: %w", err)
+		}
 	case <-ctx.Done():
-		// Cancellation requested by the parent context
+		// Cancellation requested by the parent context. The server is stopped by the method Finalize.
 		logrus.Debug("server cancellation requested")
 	}
 	return nil
