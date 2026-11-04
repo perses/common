@@ -14,6 +14,7 @@
 package config
 
 import (
+	"io/fs"
 	"path/filepath"
 	"testing"
 
@@ -24,8 +25,11 @@ import (
 )
 
 func TestWatchConfigFile_LogTheWatchError(t *testing.T) {
-	hook := logrusTest.NewGlobal()
-	defer logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	t.Cleanup(func() {
+		logrus.StandardLogger().ReplaceHooks(origHooks)
+	})
+	hook := logrusTest.NewLocal(logrus.StandardLogger())
 
 	type watchConfig struct {
 		Field string `yaml:"field"`
@@ -43,5 +47,5 @@ func TestWatchConfigFile_LogTheWatchError(t *testing.T) {
 	assert.Contains(t, entry.Message, "Failed to watch the config file")
 	watchErr, isError := entry.Data[logrus.ErrorKey].(error)
 	require.True(t, isError, "the error returned by the watcher must be logged")
-	assert.Error(t, watchErr)
+	assert.ErrorIs(t, watchErr, fs.ErrNotExist)
 }
