@@ -260,7 +260,7 @@ func (b *Builder) ActivatePprof(activate bool) *Builder {
 
 // ReadHeaderTimeout sets the amount of time allowed to read the request headers (see http.Server.ReadHeaderTimeout).
 // It protects the server against clients sending the headers slowly to keep the connections open (Slowloris attack).
-// The default value is 10s. A negative value disables the timeout.
+// The default value is 10s, or the ReadTimeout if it is shorter. A negative value disables the timeout.
 func (b *Builder) ReadHeaderTimeout(timeout time.Duration) *Builder {
 	b.readHeaderTimeout = timeout
 	return b
@@ -281,7 +281,7 @@ func (b *Builder) WriteTimeout(timeout time.Duration) *Builder {
 }
 
 // IdleTimeout sets the maximum amount of time to wait for the next request when keep-alives are enabled (see http.Server.IdleTimeout).
-// The default value is 2m. A negative value disables the timeout.
+// The default value is 2m, whatever the ReadTimeout is. A negative value disables the timeout.
 func (b *Builder) IdleTimeout(timeout time.Duration) *Builder {
 	b.idleTimeout = timeout
 	return b
@@ -369,8 +369,16 @@ func (b *Builder) build() (*server, error) {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = hidePort
+	readHeaderTimeout := b.readHeaderTimeout
+	if readHeaderTimeout == 0 {
+		readHeaderTimeout = defaultReadHeaderTimeout
+		// Like http.Server, the headers cannot take longer to be read than the whole request.
+		if b.readTimeout > 0 {
+			readHeaderTimeout = min(b.readTimeout, defaultReadHeaderTimeout)
+		}
+	}
 	for _, httpServer := range []*http.Server{e.Server, e.TLSServer} {
-		httpServer.ReadHeaderTimeout = cmp.Or(b.readHeaderTimeout, defaultReadHeaderTimeout)
+		httpServer.ReadHeaderTimeout = readHeaderTimeout
 		httpServer.ReadTimeout = b.readTimeout
 		httpServer.WriteTimeout = b.writeTimeout
 		httpServer.IdleTimeout = cmp.Or(b.idleTimeout, defaultIdleTimeout)

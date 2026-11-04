@@ -99,6 +99,24 @@ func TestBuild_HTTPServerTimeouts(t *testing.T) {
 			expectedIdleTimeout:       30 * time.Second,
 		},
 		{
+			name: "read timeout shorter than the default read header timeout",
+			configure: func(b *Builder) {
+				b.ReadTimeout(5 * time.Second)
+			},
+			expectedReadHeaderTimeout: 5 * time.Second,
+			expectedReadTimeout:       5 * time.Second,
+			expectedIdleTimeout:       defaultIdleTimeout,
+		},
+		{
+			name: "read timeout longer than the default read header timeout",
+			configure: func(b *Builder) {
+				b.ReadTimeout(time.Minute)
+			},
+			expectedReadHeaderTimeout: defaultReadHeaderTimeout,
+			expectedReadTimeout:       time.Minute,
+			expectedIdleTimeout:       defaultIdleTimeout,
+		},
+		{
 			name: "timeouts disabled",
 			configure: func(b *Builder) {
 				b.ReadHeaderTimeout(-1).IdleTimeout(-1)
