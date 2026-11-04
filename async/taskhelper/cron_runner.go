@@ -84,8 +84,8 @@ func (r *cronRunner) cron(ctx context.Context, cancelFunc context.CancelFunc) {
 			case now = <-timer.C:
 				// then run the task
 				// A failure must not stop the task: it is executed again at the next schedule.
-				if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil {
-					logExecuteError(simpleTask.String(), executeErr)
+				if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil && !handleExecuteError(ctx, simpleTask.String(), "schedule", executeErr) {
+					return
 				}
 				next = r.schedule.Next(now)
 			case <-ctx.Done():
