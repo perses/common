@@ -242,6 +242,9 @@ func (b *Builder) APIRegistration(api Register) *Builder {
 // ActivatePprof exposes the pprof endpoints under /debug/pprof. It is disabled by default.
 // These endpoints are not authenticated and expose sensitive information about the process (like the command line arguments, the memory or the goroutine stacks),
 // so only activate them when the server is not reachable by untrusted clients.
+//
+// Note: this package imports net/http/pprof, which registers the pprof endpoints on http.DefaultServeMux.
+// So, whatever this option is, never serve http.DefaultServeMux (for example with http.ListenAndServe(addr, nil)) to untrusted clients.
 func (b *Builder) ActivatePprof(activate bool) *Builder {
 	b.activatePprof = activate
 	return b

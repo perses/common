@@ -14,6 +14,7 @@
 package echo
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -45,7 +46,11 @@ func TestPprof(t *testing.T) {
 		{name: "index", activate: new(true), path: "/debug/pprof", expected: http.StatusOK},
 		{name: "named profile", activate: new(true), path: "/debug/pprof/heap", expected: http.StatusOK},
 		{name: "cmdline", activate: new(true), path: "/debug/pprof/cmdline", expected: http.StatusOK},
+		{name: "index with a trailing slash", activate: new(true), path: "/debug/pprof/", expected: http.StatusOK},
 		{name: "symbol", activate: new(true), path: "/debug/pprof/symbol", expected: http.StatusOK},
+		// The context of the request is canceled, so the CPU profile and the trace are stopped immediately.
+		{name: "profile", activate: new(true), path: "/debug/pprof/profile", expected: http.StatusOK},
+		{name: "trace", activate: new(true), path: "/debug/pprof/trace", expected: http.StatusOK},
 		{name: "unknown profile", activate: new(true), path: "/debug/pprof/unknown", expected: http.StatusNotFound},
 		{name: "handler registered on http.DefaultServeMux", activate: new(true), path: "/debug/pprof/custom-handler", expected: http.StatusNotFound},
 	}
@@ -60,8 +65,10 @@ func TestPprof(t *testing.T) {
 			handler, err := builder.BuildHandler()
 			require.NoError(t, err)
 
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			handler.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, tt.path, nil))
 			assert.Equal(t, tt.expected, rec.Code)
 		})
 	}
