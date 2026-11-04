@@ -17,11 +17,14 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	echoLib "github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -555,4 +558,105 @@ func TestServer_TLSCipherSuitesWithoutHTTP2(t *testing.T) {
 		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 	})
 	require.Error(t, err)
+}
+
+func TestBuild_PartialTLSConfiguration(t *testing.T) {
+	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	t.Cleanup(func() {
+		logrus.StandardLogger().ReplaceHooks(origHooks)
+	})
+	hook := logrustest.NewLocal(logrus.StandardLogger())
+
+	tests := []struct {
+		name            string
+		certFile        string
+		keyFile         string
+		minVersion      string
+		expectedError   string
+		expectedWarning bool
+	}{
+		{
+			name: "HTTP",
+		},
+		{
+			name:     "HTTPS",
+			certFile: "tls.crt",
+			keyFile:  "tls.key",
+		},
+		{
+			name:          "only the certificate is set",
+			certFile:      "tls.crt",
+			expectedError: "--web.tls-key-file must be set when --web.tls-cert-file is set",
+		},
+		{
+			name:          "only the key is set",
+			keyFile:       "tls.key",
+			expectedError: "--web.tls-cert-file must be set when --web.tls-key-file is set",
+		},
+		{
+			name:            "TLS option without HTTPS",
+			minVersion:      "1.2",
+			expectedWarning: true,
+		},
+		{
+			name:       "TLS option with HTTPS",
+			certFile:   "tls.crt",
+			keyFile:    "tls.key",
+			minVersion: "1.2",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origCert := cert
+			origKey := key
+			origMinVersion := tlsMinVersion
+			cert = tt.certFile
+			key = tt.keyFile
+			tlsMinVersion = tt.minVersion
+			defer func() {
+				cert = origCert
+				key = origKey
+				tlsMinVersion = origMinVersion
+			}()
+			hook.Reset()
+
+			_, err := NewBuilder().
+				APIRegistration(&mockRegister{}).
+				OverrideDefaultMiddleware(true).
+				Build()
+			if tt.expectedError != "" {
+				require.EqualError(t, err, tt.expectedError)
+			} else {
+				require.NoError(t, err)
+			}
+
+			warned := false
+			for _, entry := range hook.AllEntries() {
+				if entry.Level == logrus.WarnLevel && strings.Contains(entry.Message, "have no effect because HTTPS is not enabled") {
+					warned = true
+				}
+			}
+			assert.Equal(t, tt.expectedWarning, warned)
+		})
+	}
+}
+
+func TestBuild_PartialTLSConfigurationDoesNotModifyTheBuilder(t *testing.T) {
+	origCert := cert
+	cert = "tls.crt"
+	defer func() {
+		cert = origCert
+	}()
+
+	builder := NewBuilder().
+		APIRegistration(&mockRegister{}).
+		MetricNamespace("test").
+		PrometheusRegisterer(prometheus.NewRegistry())
+	_, err := builder.Build()
+	require.Error(t, err)
+
+	// The configuration is rejected before the Builder is modified, so it can be built once the configuration is fixed.
+	cert = ""
+	_, err = builder.Build()
+	require.NoError(t, err)
 }
