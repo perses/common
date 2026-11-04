@@ -305,6 +305,14 @@ func (b *Builder) build() (*server, error) {
 		b.mdws = append(defaultMiddleware, b.mdws...)
 	}
 
+	// Serving HTTP when HTTPS is expected would expose the traffic, so a partial TLS configuration is rejected.
+	if (cert == "") != (key == "") {
+		return nil, fmt.Errorf("both --web.tls-cert-file and --web.tls-key-file must be set to start the HTTPS server")
+	}
+	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "") {
+		logrus.Warn("--web.tls-min-version, --web.tls-max-version and --web.tls-cipher-suites are ignored because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
+	}
+
 	// Parse TLS options from flags
 	parsedMinVersion, err := parseTLSVersion(tlsMinVersion)
 	if err != nil {
