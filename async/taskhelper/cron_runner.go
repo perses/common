@@ -69,10 +69,11 @@ func (r *cronRunner) Start(ctx context.Context, cancelFunc context.CancelFunc) (
 			return
 		}
 	}
-	return r.cron(childCtx, cancelFunc)
+	r.cron(childCtx, cancelFunc)
+	return nil
 }
 
-func (r *cronRunner) cron(ctx context.Context, cancelFunc context.CancelFunc) error {
+func (r *cronRunner) cron(ctx context.Context, cancelFunc context.CancelFunc) {
 	simpleTask := r.task.(async.SimpleTask)
 	now := time.Now()
 	next := r.schedule.Next(now)
@@ -82,13 +83,14 @@ func (r *cronRunner) cron(ctx context.Context, cancelFunc context.CancelFunc) er
 			select {
 			case now = <-timer.C:
 				// then run the task
-				if executeErr := r.task.(async.SimpleTask).Execute(ctx, cancelFunc); executeErr != nil {
-					return fmt.Errorf("unable to call the execute method of the task: %w", executeErr)
+				// A failure must not stop the task: it is executed again at the next schedule.
+				if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil {
+					logExecuteError(simpleTask.String(), executeErr)
 				}
 				next = r.schedule.Next(now)
 			case <-ctx.Done():
 				logrus.Debugf("task %s has been canceled", simpleTask.String())
-				return nil
+				return
 			}
 			break
 		}

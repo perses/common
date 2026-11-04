@@ -71,18 +71,23 @@ func (r *runner) Start(ctx context.Context, cancelFunc context.CancelFunc) (err 
 
 	// then run the task
 	if executeErr := r.task.(async.SimpleTask).Execute(childCtx, cancelFunc); executeErr != nil {
-		err = fmt.Errorf("unable to call the execute method of the task: %w", executeErr)
-		return
+		if r.interval <= 0 {
+			err = fmt.Errorf("unable to call the execute method of the task: %w", executeErr)
+			return
+		}
+		// A periodic task is executed again at the next tick, so a single failure must not stop it.
+		logExecuteError(r.String(), executeErr)
 	}
 
 	// in case the runner has an interval properly set, then we can create a ticker and periodically call the method that executes the task
-	return r.tick(childCtx, cancelFunc)
+	r.tick(childCtx, cancelFunc)
+	return nil
 }
 
-func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) error {
+func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) {
 	simpleTask := r.task.(async.SimpleTask)
 	if r.interval <= 0 {
-		return nil
+		return
 	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -90,11 +95,17 @@ func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) error 
 		select {
 		case <-ticker.C:
 			if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil {
-				return fmt.Errorf("unable to call the execute method of the task %s: %w", simpleTask.String(), executeErr)
+				logExecuteError(simpleTask.String(), executeErr)
 			}
 		case <-ctx.Done():
 			logrus.Debugf("task %s has been canceled", simpleTask.String())
-			return nil
+			return
 		}
 	}
+}
+
+// logExecuteError logs the error returned by a periodic task.
+// The task is not stopped: it is executed again at the next tick, as the failure can be temporary.
+func logExecuteError(taskName string, err error) {
+	logrus.WithError(err).Errorf("unable to call the execute method of the task %s, it will be executed again at the next tick", taskName)
 }
