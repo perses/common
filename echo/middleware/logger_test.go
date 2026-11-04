@@ -14,6 +14,7 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,13 +27,18 @@ import (
 )
 
 func TestLogger(t *testing.T) {
-	previousLevel := logrus.GetLevel()
-	logrus.SetLevel(logrus.DebugLevel)
-	hook := logrusTest.NewGlobal()
-	defer func() {
-		logrus.SetLevel(previousLevel)
-		logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
-	}()
+	logger := logrus.StandardLogger()
+	origHooks := logger.ReplaceHooks(make(logrus.LevelHooks))
+	origLevel := logger.GetLevel()
+	origOutput := logger.Out
+	logger.SetLevel(logrus.DebugLevel)
+	logger.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		logger.ReplaceHooks(origHooks)
+		logger.SetLevel(origLevel)
+		logger.SetOutput(origOutput)
+	})
+	hook := logrusTest.NewLocal(logger)
 
 	e := echo.New()
 	e.Use(Logger())
@@ -40,31 +46,69 @@ func TestLogger(t *testing.T) {
 		return c.NoContent(http.StatusOK)
 	}
 	e.GET("/api/v1/users", handler)
+	e.GET("/api/v1/projects/:project", handler)
 	e.GET("/metrics", handler)
+	// Like a reverse proxy, this handler modifies the path of the request.
+	e.GET("/proxy/*", func(c echo.Context) error {
+		c.Request().URL.Path = "/rewritten"
+		return c.NoContent(http.StatusOK)
+	})
 
 	tests := []struct {
-		name          string
-		target        string
-		expectedLevel logrus.Level
-		expectedURI   string
+		name           string
+		target         string
+		expectedStatus int
+		expectedLevel  logrus.Level
+		expectedURI    string
 	}{
 		{
-			name:          "regular endpoint",
-			target:        "/api/v1/users",
-			expectedLevel: logrus.InfoLevel,
-			expectedURI:   "/api/v1/users",
+			name:           "regular endpoint",
+			target:         "/api/v1/users",
+			expectedStatus: http.StatusOK,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/api/v1/users",
 		},
 		{
-			name:          "blacklisted endpoint",
-			target:        "/metrics",
-			expectedLevel: logrus.DebugLevel,
-			expectedURI:   "/metrics",
+			name:           "blacklisted endpoint",
+			target:         "/metrics",
+			expectedStatus: http.StatusOK,
+			expectedLevel:  logrus.DebugLevel,
+			expectedURI:    "/metrics",
 		},
 		{
-			name:          "the query string cannot change the log level and is not logged",
-			target:        "/api/v1/users?token=secret&x=metrics",
-			expectedLevel: logrus.InfoLevel,
-			expectedURI:   "/api/v1/users",
+			name:           "the query string cannot change the log level and is not logged",
+			target:         "/api/v1/users?token=secret&x=metrics",
+			expectedStatus: http.StatusOK,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/api/v1/users",
+		},
+		{
+			name:           "a path parameter cannot change the log level",
+			target:         "/api/v1/projects/metrics",
+			expectedStatus: http.StatusOK,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/api/v1/projects/metrics",
+		},
+		{
+			name:           "an unknown endpoint cannot change the log level",
+			target:         "/metrics-hidden",
+			expectedStatus: http.StatusNotFound,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/metrics-hidden",
+		},
+		{
+			name:           "the path requested by the client is logged, even if the handler modifies it",
+			target:         "/proxy/api/v1/query",
+			expectedStatus: http.StatusOK,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/proxy/api/v1/query",
+		},
+		{
+			name:           "the control characters are escaped",
+			target:         "/api/v1/projects/a%0Ab",
+			expectedStatus: http.StatusOK,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/api/v1/projects/a%0Ab",
 		},
 	}
 	for _, tt := range tests {
@@ -72,7 +116,7 @@ func TestLogger(t *testing.T) {
 			hook.Reset()
 			rec := httptest.NewRecorder()
 			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.target, nil))
-			require.Equal(t, http.StatusOK, rec.Code)
+			require.Equal(t, tt.expectedStatus, rec.Code)
 
 			entry := hook.LastEntry()
 			require.NotNil(t, entry)
