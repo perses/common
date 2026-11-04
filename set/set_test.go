@@ -136,3 +136,25 @@ func TestSetUnmarshalYAML(t *testing.T) {
 		t.Errorf("Set does not contain expected elements after unmarshalling")
 	}
 }
+
+func TestMergeReturnsANewSet(t *testing.T) {
+	set := New(1, 2)
+
+	merged := Merge(set, nil)
+	merged.Add(3)
+	assert.False(t, set.Contains(3))
+
+	merged = Merge(nil, set)
+	merged.Add(4)
+	assert.False(t, set.Contains(4))
+
+	assert.Nil(t, Merge[int](nil, nil))
+}
+
+func TestSetTransformAsSliceWithInterface(t *testing.T) {
+	// The order of the map iteration is random, so the sort is checked several times.
+	for range 50 {
+		s := New[any](nil, 2, "b", 1, "a", 1.5)
+		assert.Equal(t, []any{nil, 1.5, 1, 2, "a", "b"}, s.TransformAsSlice())
+	}
+}

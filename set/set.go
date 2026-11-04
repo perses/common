@@ -36,10 +36,10 @@ func New[T comparable](vals ...T) Set[T] {
 // It will create a new set and leave the input sets unmodified.
 func Merge[T comparable](old, new Set[T]) Set[T] {
 	if new == nil {
-		return old
+		return maps.Clone(old)
 	}
 	if old == nil {
-		return new
+		return maps.Clone(new)
 	}
 	s := Set[T]{}
 	maps.Copy(s, new)
@@ -132,35 +132,42 @@ func (s *Set[T]) UnmarshalYAML(unmarshal func(any) error) error {
 // strings and structs. When comparing Go structs, it only checks the struct
 // fields of string type.
 // If the compared values aren't strings or structs, they are considered equal.
+// When T is an interface, a nil value is placed first, and values of different types are ordered by type.
 func compare[T comparable](a, b T) int {
-	switch reflect.TypeOf(a).Kind() {
+	valueA := reflect.ValueOf(a)
+	valueB := reflect.ValueOf(b)
+	if !valueA.IsValid() || !valueB.IsValid() {
+		return cmp.Compare(validity(valueA), validity(valueB))
+	}
+	if valueA.Type() != valueB.Type() {
+		if c := cmp.Compare(valueA.Type().String(), valueB.Type().String()); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(valueA.Kind(), valueB.Kind()); c != 0 {
+			return c
+		}
+	}
+	switch valueA.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return cmp.Compare(
-			reflect.ValueOf(a).Int(),
-			reflect.ValueOf(b).Int(),
-		)
+		return cmp.Compare(valueA.Int(), valueB.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return cmp.Compare(
-			reflect.ValueOf(a).Uint(),
-			reflect.ValueOf(b).Uint(),
-		)
+		return cmp.Compare(valueA.Uint(), valueB.Uint())
 	case reflect.Float32, reflect.Float64:
-		return cmp.Compare(
-			reflect.ValueOf(a).Float(),
-			reflect.ValueOf(b).Float(),
-		)
+		return cmp.Compare(valueA.Float(), valueB.Float())
 	case reflect.String:
-		return cmp.Compare(
-			reflect.ValueOf(a).String(),
-			reflect.ValueOf(b).String(),
-		)
+		return cmp.Compare(valueA.String(), valueB.String())
 	case reflect.Struct:
-		return cmp.Compare(
-			buildKey(reflect.ValueOf(a)),
-			buildKey(reflect.ValueOf(b)),
-		)
+		return cmp.Compare(buildKey(valueA), buildKey(valueB))
 	}
 
+	return 0
+}
+
+// validity returns 0 for an invalid value (i.e. a nil interface), and 1 otherwise.
+func validity(v reflect.Value) int {
+	if v.IsValid() {
+		return 1
+	}
 	return 0
 }
 
