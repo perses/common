@@ -54,6 +54,7 @@ package echo
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -272,6 +273,8 @@ func (b *Builder) build() (*server, error) {
 			b.addr = defaultAddr
 		}
 	}
+	// The middlewares of the Builder are not modified, so Build can be called several times.
+	mdws := slices.Clone(b.mdws)
 	if !b.overrideMiddleware {
 		if b.gzipSkipper == nil {
 			b.gzipSkipper = middleware.DefaultSkipper
@@ -293,16 +296,14 @@ func (b *Builder) build() (*server, error) {
 			b.promRegisterer = prometheus.DefaultRegisterer
 		}
 		if len(b.metricNamespace) > 0 {
-			metricMiddleware, err := persesMiddleware.NewMetrics(b.metricNamespace)
+			metricMiddleware, err := b.registerMetrics()
 			if err != nil {
 				return nil, err
 			}
-			b.promRegisterer.MustRegister(metricMiddleware)
-			b.promRegisterer.MustRegister(version.NewCollector(b.metricNamespace))
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
 
 		}
-		b.mdws = append(defaultMiddleware, b.mdws...)
+		mdws = append(defaultMiddleware, mdws...)
 	}
 
 	// Parse TLS options from flags
@@ -337,11 +338,35 @@ func (b *Builder) build() (*server, error) {
 		tlsMinVersion:   parsedMinVersion,
 		tlsMaxVersion:   parsedMaxVersion,
 		tlsCipherSuites: parsedCipherSuites,
-		mdws:            b.mdws,
+		mdws:            mdws,
 		preMDWs:         b.preMDWs,
 		shutdownTimeout: 30 * time.Second,
 		activatePprof:   b.activatePprof,
 	}, nil
+}
+
+// registerMetrics registers the metrics of the HTTP server.
+// If they are already registered (for example, when Build is called several times), the existing ones are used.
+func (b *Builder) registerMetrics() (*persesMiddleware.Metrics, error) {
+	metricMiddleware, err := persesMiddleware.NewMetrics(b.metricNamespace)
+	if err != nil {
+		return nil, err
+	}
+	if err = b.promRegisterer.Register(metricMiddleware); err != nil {
+		var alreadyRegistered prometheus.AlreadyRegisteredError
+		if !errors.As(err, &alreadyRegistered) {
+			return nil, fmt.Errorf("unable to register the HTTP metrics: %w", err)
+		}
+		existing, ok := alreadyRegistered.ExistingCollector.(*persesMiddleware.Metrics)
+		if !ok {
+			return nil, fmt.Errorf("unable to register the HTTP metrics: %w", err)
+		}
+		metricMiddleware = existing
+	}
+	if err = b.promRegisterer.Register(version.NewCollector(b.metricNamespace)); err != nil && !errors.As(err, new(prometheus.AlreadyRegisteredError)) {
+		return nil, fmt.Errorf("unable to register the version metric: %w", err)
+	}
+	return metricMiddleware, nil
 }
 
 type server struct {
