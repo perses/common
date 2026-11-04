@@ -52,6 +52,7 @@
 package echo
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"flag"
@@ -73,6 +74,13 @@ import (
 )
 
 const defaultAddr = ":8080"
+
+const (
+	// defaultReadHeaderTimeout protects the server against clients sending the request headers slowly to keep the connections open (Slowloris attack).
+	defaultReadHeaderTimeout = 10 * time.Second
+	// defaultIdleTimeout closes the keep-alive connections that are not used anymore.
+	defaultIdleTimeout = 2 * time.Minute
+)
 
 var (
 	// http address listened
@@ -179,6 +187,10 @@ type Builder struct {
 	preMDWs            []echo.MiddlewareFunc
 	gzipSkipper        middleware.Skipper
 	activatePprof      bool
+	readHeaderTimeout  time.Duration
+	readTimeout        time.Duration
+	writeTimeout       time.Duration
+	idleTimeout        time.Duration
 }
 
 func NewBuilder() *Builder {
@@ -243,6 +255,35 @@ func (b *Builder) APIRegistration(api Register) *Builder {
 
 func (b *Builder) ActivatePprof(activate bool) *Builder {
 	b.activatePprof = activate
+	return b
+}
+
+// ReadHeaderTimeout sets the amount of time allowed to read the request headers (see http.Server.ReadHeaderTimeout).
+// It protects the server against clients sending the headers slowly to keep the connections open (Slowloris attack).
+// The default value is 10s. A negative value disables the timeout.
+func (b *Builder) ReadHeaderTimeout(timeout time.Duration) *Builder {
+	b.readHeaderTimeout = timeout
+	return b
+}
+
+// ReadTimeout sets the maximum duration to read the entire request, including the body (see http.Server.ReadTimeout).
+// There is no timeout by default, as a request body can be large.
+func (b *Builder) ReadTimeout(timeout time.Duration) *Builder {
+	b.readTimeout = timeout
+	return b
+}
+
+// WriteTimeout sets the maximum duration before timing out the writes of the response (see http.Server.WriteTimeout).
+// There is no timeout by default, as some responses can take a long time (long queries, streaming, CPU profiles, etc.).
+func (b *Builder) WriteTimeout(timeout time.Duration) *Builder {
+	b.writeTimeout = timeout
+	return b
+}
+
+// IdleTimeout sets the maximum amount of time to wait for the next request when keep-alives are enabled (see http.Server.IdleTimeout).
+// The default value is 2m. A negative value disables the timeout.
+func (b *Builder) IdleTimeout(timeout time.Duration) *Builder {
+	b.idleTimeout = timeout
 	return b
 }
 
@@ -328,6 +369,12 @@ func (b *Builder) build() (*server, error) {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = hidePort
+	for _, httpServer := range []*http.Server{e.Server, e.TLSServer} {
+		httpServer.ReadHeaderTimeout = cmp.Or(b.readHeaderTimeout, defaultReadHeaderTimeout)
+		httpServer.ReadTimeout = b.readTimeout
+		httpServer.WriteTimeout = b.writeTimeout
+		httpServer.IdleTimeout = cmp.Or(b.idleTimeout, defaultIdleTimeout)
+	}
 	return &server{
 		addr:            b.addr,
 		apis:            b.apis,
