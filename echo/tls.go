@@ -31,6 +31,9 @@ type certificateReloader struct {
 	certificate *tls.Certificate
 	certInfo    os.FileInfo
 	keyInfo     os.FileInfo
+	// statFailed is true when the files could not be checked during the previous handshake.
+	// It is used to log the error only once instead of on every handshake.
+	statFailed bool
 }
 
 // newCertificateReloader loads the certificate and the key a first time.
@@ -59,9 +62,13 @@ func (r *certificateReloader) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certi
 	defer r.mutex.Unlock()
 	certInfo, keyInfo, err := r.stat()
 	if err != nil {
-		logrus.WithError(err).Error("unable to check if the TLS certificate changed, the previous one is used")
+		if !r.statFailed {
+			logrus.WithError(err).Error("unable to check if the TLS certificate changed, the previous one is used")
+			r.statFailed = true
+		}
 		return r.certificate, nil
 	}
+	r.statFailed = false
 	if isSameFile(r.certInfo, certInfo) && isSameFile(r.keyInfo, keyInfo) {
 		return r.certificate, nil
 	}

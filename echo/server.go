@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"slices"
 	"strings"
 	"time"
 
@@ -428,12 +429,29 @@ func (s *server) startTLS() error {
 		CipherSuites:   s.tlsCipherSuites,
 		GetCertificate: reloader.GetCertificate,
 	}
-	if !s.e.DisableHTTP2 {
+	switch {
+	case s.e.DisableHTTP2:
+	case !isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites):
+		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, required by HTTP/2")
+	default:
 		tlsConfig.NextProtos = []string{"h2"}
 	}
 	s.e.TLSServer.Addr = s.addr
 	s.e.TLSServer.TLSConfig = tlsConfig
 	return s.e.StartServer(s.e.TLSServer)
+}
+
+// isHTTP2Compatible tells if HTTP/2 can be offered with the given TLS settings.
+// HTTP/2 requires one of these cipher suites when TLS 1.2 is allowed (RFC 7540, section 9.2.2),
+// otherwise net/http refuses to start the server.
+func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
+	if len(cipherSuites) == 0 || minVersion >= tls.VersionTLS13 {
+		return true
+	}
+	return slices.ContainsFunc(cipherSuites, func(id uint16) bool {
+		return id == tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 ||
+			id == tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+	})
 }
 
 func (s *server) Finalize() error {

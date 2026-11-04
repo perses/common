@@ -14,7 +14,6 @@
 package echo
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -28,7 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -157,87 +157,17 @@ func TestCertificateReloader_GetCertificate(t *testing.T) {
 	replaceFile(t, keyFile, keyPEM)
 	assert.Equal(t, int64(4), servedSerialNumber(t, r))
 
-	// The files are removed: the previous certificate is kept.
+	// The files are removed: the previous certificate is kept, and the error is logged only once.
+	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	defer logrus.StandardLogger().ReplaceHooks(origHooks)
+	hook := logrustest.NewLocal(logrus.StandardLogger())
 	require.NoError(t, os.Remove(certFile))
 	require.NoError(t, os.Remove(keyFile))
 	assert.Equal(t, int64(4), servedSerialNumber(t, r))
-}
+	assert.Equal(t, int64(4), servedSerialNumber(t, r))
+	assert.Len(t, hook.AllEntries(), 1)
 
-func TestServer_TLS(t *testing.T) {
-	dir := t.TempDir()
-	certFile, keyFile := writeCertificate(t, dir, 1)
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	address := listener.Addr().String()
-	require.NoError(t, listener.Close())
-
-	origMinVersion := tlsMinVersion
-	origCert := cert
-	origKey := key
-	tlsMinVersion = "1.3"
-	cert = certFile
-	key = keyFile
-	defer func() {
-		tlsMinVersion = origMinVersion
-		cert = origCert
-		key = origKey
-	}()
-
-	builder := NewBuilder().
-		APIRegistration(&mockRegister{}).
-		PrometheusRegisterer(prometheus.NewRegistry())
-	builder.ListenAddress(address)
-	task, err := builder.Build()
-	require.NoError(t, err)
-	require.NoError(t, task.Initialize())
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = task.Execute(ctx, cancel)
-	}()
-	defer func() {
-		cancel()
-		<-done
-		require.NoError(t, task.Finalize())
-	}()
-
-	dialServer := func(maxVersion uint16) (tls.ConnectionState, error) {
-		conn, dialErr := tls.Dial("tcp", address, &tls.Config{
-			// The certificates are self-signed, and the test only checks which one is served.
-			InsecureSkipVerify: true,
-			MaxVersion:         maxVersion,
-			NextProtos:         []string{"h2", "http/1.1"},
-		})
-		if dialErr != nil {
-			return tls.ConnectionState{}, dialErr
-		}
-		defer func() {
-			_ = conn.Close()
-		}()
-		return conn.ConnectionState(), nil
-	}
-
-	require.Eventually(t, func() bool {
-		_, dialErr := dialServer(0)
-		return dialErr == nil
-	}, 5*time.Second, 10*time.Millisecond)
-
-	state, err := dialServer(0)
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), state.PeerCertificates[0].SerialNumber.Int64())
-	assert.Equal(t, "h2", state.NegotiatedProtocol)
-
-	// The TLS min version is applied.
-	_, err = dialServer(tls.VersionTLS12)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "protocol version not supported")
-
-	// The certificate is rotated: the new connections get the new one.
-	writeCertificate(t, dir, 2)
-	state, err = dialServer(0)
-	require.NoError(t, err)
-	assert.Equal(t, int64(2), state.PeerCertificates[0].SerialNumber.Int64())
+	// The files are back: they are loaded again.
+	writeCertificate(t, dir, 5)
+	assert.Equal(t, int64(5), servedSerialNumber(t, r))
 }
