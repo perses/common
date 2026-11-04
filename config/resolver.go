@@ -248,7 +248,7 @@ func (c *configResolver[T]) watchConfigFile(config *T) {
 
 	// start watching the file for changes
 	// when a change is detected, we read the file again and compare the hash of the new config with the previous one
-	if file.Watch(c.configFile, func() {
+	if err := file.Watch(c.configFile, func() {
 		var newConfig T
 		err := c.read(&newConfig)
 		if err != nil {
@@ -267,7 +267,7 @@ func (c *configResolver[T]) watchConfigFile(config *T) {
 		for _, callback := range c.watchCallbacks {
 			callback(&newConfig)
 		}
-	}) != nil {
+	}); err != nil {
 		logrus.WithError(err).Errorf("Failed to watch the config file %s", c.configFile)
 	}
 }
