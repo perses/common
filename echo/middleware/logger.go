@@ -22,7 +22,8 @@ import (
 
 type LoggerConfig struct {
 	Skipper middleware.Skipper
-	// BlackListEndpoint is the list of endpoint that you don't want to log with the info level
+	// BlackListEndpoint is the list of endpoint that you don't want to log with the info level.
+	// An endpoint is matched when the URL path (without the query string) contains one of these values.
 	BlackListEndpoint []string
 }
 
@@ -54,11 +55,14 @@ func LoggerWithConfig(config LoggerConfig) echo.MiddlewareFunc {
 			if err := next(c); err != nil {
 				c.Error(err)
 			}
+			// Only the path is used: the query string is controlled by the client, so it must not be able to change the log level,
+			// and it can contain sensitive data (tokens, OAuth codes, etc.) that must not be logged.
+			path := c.Request().URL.Path
 			entry := logrus.WithField("method", c.Request().Method).
-				WithField("uri", c.Request().RequestURI).
+				WithField("uri", path).
 				WithField("status", c.Response().Status)
 
-			if slices.InvertSubContains(config.BlackListEndpoint, c.Request().RequestURI) {
+			if slices.InvertSubContains(config.BlackListEndpoint, path) {
 				entry.Debug()
 			} else {
 				entry.Info()
