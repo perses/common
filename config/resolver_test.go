@@ -101,16 +101,16 @@ func TestResolveImpl_WatchConfigShouldNotifyOnlyWhenValuesChange(t *testing.T) {
 
 	// No change, callbacks shouldn't be called
 	require.NoError(t, os.WriteFile(configFile, []byte(initialContent), 0600))
-	time.Sleep(noCallbackDelay)
-	assert.Empty(t, recorder.received())
+	assert.Never(t, func() bool {
+		return len(recorder.received()) > 0
+	}, noCallbackDelay, tick)
 
 	// Changes done, callbacks must be called
 	require.NoError(t, os.WriteFile(configFile, []byte(changedContent), 0600))
-	assert.Eventually(t, func() bool {
-		return len(recorder.received()) == 1
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, []Config{{Field1: "yoyo"}}, recorder.received())
 	}, waitFor, tick)
 	assert.Equal(t, "toto", config.Field1)
-	assert.Equal(t, []Config{{Field1: "yoyo"}}, recorder.received())
 }
 
 func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
@@ -131,17 +131,17 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 		Verify()
 	require.NoError(t, err)
 
+	// Only the elements coming from the file are checked:
+	// when no environment prefix is set, lamenv appends an empty element to a slice.
+	require.GreaterOrEqual(t, len(config), 2)
+	assert.Equal(t, Config{0, 1}, config[:2])
+
 	// Changes done, callbacks must be called
 	require.NoError(t, os.WriteFile(configFile, []byte(changedContent), 0600))
-	require.Eventually(t, func() bool {
-		return len(recorder.received()) == 1
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		received := recorder.received()
+		require.Len(c, received, 1)
+		require.GreaterOrEqual(c, len(received[0]), 3)
+		assert.Equal(c, Config{3, 4, 5}, received[0][:3])
 	}, waitFor, tick)
-
-	assert.Equal(t, 0, config[0])
-	assert.Equal(t, 1, config[1])
-
-	updatedConfig := recorder.received()[0]
-	assert.Equal(t, 3, updatedConfig[0])
-	assert.Equal(t, 4, updatedConfig[1])
-	assert.Equal(t, 5, updatedConfig[2])
 }

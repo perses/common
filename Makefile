@@ -13,4 +13,4 @@ fmt:
 
 test:
 	@echo ">> running all tests"
-	$(GO) test -count=1 -v $(pkgs)
+	$(GO) test -race -count=1 -v $(pkgs)
