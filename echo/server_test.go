@@ -14,8 +14,11 @@
 package echo
 
 import (
+	"context"
 	"crypto/tls"
+	"net"
 	"testing"
+	"time"
 
 	echoLib "github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
@@ -399,4 +402,157 @@ func TestBuild_TLSFlagValues(t *testing.T) {
 	assert.Equal(t, []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256}, s.tlsCipherSuites)
 	assert.Equal(t, "/path/cert.pem", s.cert)
 	assert.Equal(t, "/path/key.pem", s.key)
+}
+
+func TestIsHTTP2Compatible(t *testing.T) {
+	tests := []struct {
+		name         string
+		minVersion   uint16
+		cipherSuites []uint16
+		expected     bool
+	}{
+		{
+			name:     "default cipher suites",
+			expected: true,
+		},
+		{
+			name:         "with TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+			minVersion:   tls.VersionTLS12,
+			cipherSuites: []uint16{tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+			expected:     true,
+		},
+		{
+			name:         "with TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+			cipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+			expected:     true,
+		},
+		{
+			name:         "without a cipher suite required by HTTP/2",
+			minVersion:   tls.VersionTLS12,
+			cipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
+			expected:     false,
+		},
+		{
+			name:         "without a cipher suite required by HTTP/2 and the default min version",
+			cipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
+			expected:     false,
+		},
+		{
+			name:         "without a cipher suite required by HTTP/2 but only TLS 1.3",
+			minVersion:   tls.VersionTLS13,
+			cipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
+			expected:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isHTTP2Compatible(tt.minVersion, tt.cipherSuites))
+		})
+	}
+}
+
+// startTLSServer starts the HTTPS server with the given TLS options and returns its address.
+// The server is stopped at the end of the test.
+func startTLSServer(t *testing.T, certFile, keyFile, minVersion, cipherSuites string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	origMinVersion := tlsMinVersion
+	origCipherSuites := tlsCipherSuites
+	origCert := cert
+	origKey := key
+	tlsMinVersion = minVersion
+	tlsCipherSuites = cipherSuites
+	cert = certFile
+	key = keyFile
+	defer func() {
+		tlsMinVersion = origMinVersion
+		tlsCipherSuites = origCipherSuites
+		cert = origCert
+		key = origKey
+	}()
+
+	builder := NewBuilder().
+		APIRegistration(&mockRegister{}).
+		PrometheusRegisterer(prometheus.NewRegistry())
+	builder.ListenAddress(address)
+	task, err := builder.Build()
+	require.NoError(t, err)
+	require.NoError(t, task.Initialize())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = task.Execute(ctx, cancel)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		require.NoError(t, task.Finalize())
+	})
+
+	require.Eventually(t, func() bool {
+		_, dialErr := dialTLSServer(address, &tls.Config{})
+		return dialErr == nil
+	}, 5*time.Second, 10*time.Millisecond)
+	return address
+}
+
+func dialTLSServer(address string, config *tls.Config) (tls.ConnectionState, error) {
+	// The certificates are self-signed, and the tests only check which one is served.
+	config.InsecureSkipVerify = true
+	config.NextProtos = []string{"h2", "http/1.1"}
+	conn, err := tls.Dial("tcp", address, config)
+	if err != nil {
+		return tls.ConnectionState{}, err
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+	return conn.ConnectionState(), nil
+}
+
+func TestServer_TLS(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := writeCertificate(t, dir, 1)
+	address := startTLSServer(t, certFile, keyFile, "1.3", "")
+
+	state, err := dialTLSServer(address, &tls.Config{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), state.PeerCertificates[0].SerialNumber.Int64())
+	assert.Equal(t, "h2", state.NegotiatedProtocol)
+
+	// The TLS min version is applied.
+	_, err = dialTLSServer(address, &tls.Config{MaxVersion: tls.VersionTLS12})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "protocol version not supported")
+
+	// The certificate is rotated: the new connections get the new one.
+	writeCertificate(t, dir, 2)
+	state, err = dialTLSServer(address, &tls.Config{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), state.PeerCertificates[0].SerialNumber.Int64())
+}
+
+func TestServer_TLSCipherSuitesWithoutHTTP2(t *testing.T) {
+	certFile, keyFile := writeCertificate(t, t.TempDir(), 1)
+	address := startTLSServer(t, certFile, keyFile, "1.2", "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")
+
+	// The server starts, and the configured cipher suite is used with HTTP/1.1.
+	state, err := dialTLSServer(address, &tls.Config{MaxVersion: tls.VersionTLS12})
+	require.NoError(t, err)
+	assert.Equal(t, tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, state.CipherSuite)
+	assert.Empty(t, state.NegotiatedProtocol)
+
+	// The other cipher suites are rejected.
+	_, err = dialTLSServer(address, &tls.Config{
+		MaxVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+	})
+	require.Error(t, err)
 }

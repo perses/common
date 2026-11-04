@@ -58,6 +58,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,8 +94,8 @@ var (
 func InitFlag() {
 	flag.StringVar(&addr, "web.listen-address", defaultAddr, "The address to listen on for HTTP requests, web interface and telemetry.")
 	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
-	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server")
-	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server")
+	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server. It is reloaded when the file changes.")
+	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server. It is reloaded when the file changes.")
 	flag.StringVar(&tlsMinVersion, "web.tls-min-version", "", "Minimum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsMaxVersion, "web.tls-max-version", "", "Maximum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsCipherSuites, "web.tls-cipher-suites", "", "Comma-separated list of TLS cipher suite names")
@@ -387,21 +388,7 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 	go func() {
 		defer serverCancelFunc()
 		if s.cert != "" && s.key != "" {
-			// Configure custom TLS settings if any are set
-			if s.tlsMinVersion != 0 || s.tlsMaxVersion != 0 || len(s.tlsCipherSuites) > 0 {
-				tlsConfig := &tls.Config{}
-				if s.tlsMinVersion != 0 {
-					tlsConfig.MinVersion = s.tlsMinVersion
-				}
-				if s.tlsMaxVersion != 0 {
-					tlsConfig.MaxVersion = s.tlsMaxVersion
-				}
-				if len(s.tlsCipherSuites) > 0 {
-					tlsConfig.CipherSuites = s.tlsCipherSuites
-				}
-				s.e.TLSServer.TLSConfig = tlsConfig
-			}
-			if err := s.e.StartTLS(s.addr, s.cert, s.key); err != nil {
+			if err := s.startTLS(); err != nil {
 				logrus.WithError(err).Info("http server stopped")
 			}
 		} else {
@@ -427,6 +414,44 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 		logrus.Debug("server cancellation requested")
 	}
 	return nil
+}
+
+// startTLS starts the HTTPS server.
+// echo.StartTLS is not used because it replaces the TLS configuration, and it loads the certificate only once.
+func (s *server) startTLS() error {
+	reloader, err := newCertificateReloader(s.cert, s.key)
+	if err != nil {
+		return err
+	}
+	tlsConfig := &tls.Config{
+		MinVersion:     s.tlsMinVersion,
+		MaxVersion:     s.tlsMaxVersion,
+		CipherSuites:   s.tlsCipherSuites,
+		GetCertificate: reloader.GetCertificate,
+	}
+	switch {
+	case s.e.DisableHTTP2:
+	case !isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites):
+		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, required by HTTP/2")
+	default:
+		tlsConfig.NextProtos = []string{"h2"}
+	}
+	s.e.TLSServer.Addr = s.addr
+	s.e.TLSServer.TLSConfig = tlsConfig
+	return s.e.StartServer(s.e.TLSServer)
+}
+
+// isHTTP2Compatible tells if HTTP/2 can be offered with the given TLS settings.
+// HTTP/2 requires one of these cipher suites when TLS 1.2 is allowed (RFC 7540, section 9.2.2),
+// otherwise net/http refuses to start the server.
+func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
+	if len(cipherSuites) == 0 || minVersion >= tls.VersionTLS13 {
+		return true
+	}
+	return slices.ContainsFunc(cipherSuites, func(id uint16) bool {
+		return id == tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 ||
+			id == tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+	})
 }
 
 func (s *server) Finalize() error {
