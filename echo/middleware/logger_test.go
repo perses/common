@@ -19,7 +19,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/sirupsen/logrus"
 	logrusTest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -42,14 +42,14 @@ func TestLogger(t *testing.T) {
 
 	e := echo.New()
 	e.Use(Logger())
-	handler := func(c echo.Context) error {
+	handler := func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	}
 	e.GET("/api/v1/users", handler)
 	e.GET("/api/v1/projects/:project", handler)
 	e.GET("/metrics", handler)
 	// Like a reverse proxy, this handler modifies the path of the request.
-	e.GET("/proxy/*", func(c echo.Context) error {
+	e.GET("/proxy/*", func(c *echo.Context) error {
 		c.Request().URL.Path = "/rewritten"
 		return c.NoContent(http.StatusOK)
 	})

@@ -14,8 +14,8 @@
 package middleware
 
 import (
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/perses/common/slices"
 	"github.com/sirupsen/logrus"
 )
@@ -49,7 +49,7 @@ func LoggerWithConfig(config LoggerConfig) echo.MiddlewareFunc {
 		config.BlackListEndpoint = defaultLoggerConfig.BlackListEndpoint
 	}
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			if config.Skipper(c) {
 				return next(c)
 			}
@@ -58,19 +58,20 @@ func LoggerWithConfig(config LoggerConfig) echo.MiddlewareFunc {
 			// and the escaped path cannot contain control characters.
 			path := c.Request().URL.EscapedPath()
 			route := c.Path()
-			if err := next(c); err != nil {
-				c.Error(err)
-			}
+			// The error is not handled here, it is returned to be handled by the central error handler of echo.
+			// The status logged is the one of the response that will be sent, resolved from this error.
+			err := next(c)
+			_, status := echo.ResolveResponseStatus(c.Response(), err)
 			entry := logrus.WithField("method", c.Request().Method).
 				WithField("uri", path).
-				WithField("status", c.Response().Status)
+				WithField("status", status)
 
 			if slices.InvertSubContains(config.BlackListEndpoint, route) {
 				entry.Debug()
 			} else {
 				entry.Info()
 			}
-			return nil
+			return err
 		}
 	}
 }
