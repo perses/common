@@ -55,6 +55,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -311,6 +312,14 @@ func (b *Builder) build() (*server, error) {
 	if len(b.apis) == 0 {
 		return nil, fmt.Errorf("no api registered")
 	}
+	// Serving HTTP when HTTPS is expected would expose the traffic, so a partial TLS configuration is rejected.
+	// It is checked before anything is modified or registered.
+	switch {
+	case cert != "" && key == "":
+		return nil, errors.New("--web.tls-key-file must be set when --web.tls-cert-file is set")
+	case cert == "" && key != "":
+		return nil, errors.New("--web.tls-cert-file must be set when --web.tls-key-file is set")
+	}
 	if len(b.addr) == 0 {
 		b.addr = addr
 		if len(addr) == 0 {
@@ -368,6 +377,9 @@ func (b *Builder) build() (*server, error) {
 	if parsedMinVersion != 0 && parsedMaxVersion != 0 && parsedMinVersion > parsedMaxVersion {
 		return nil, fmt.Errorf("TLS min version (%s) cannot be greater than max version (%s)",
 			tlsVersionToString(parsedMinVersion), tlsVersionToString(parsedMaxVersion))
+	}
+	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "") {
+		logrus.Warn("--web.tls-min-version, --web.tls-max-version and --web.tls-cipher-suites have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
 	}
 
 	e := echo.New()
