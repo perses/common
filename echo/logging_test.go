@@ -124,7 +124,7 @@ func (r *blockingRegister) RegisterRoute(e *echoLib.Echo) {
 	})
 }
 
-func TestServer_LogsTheShutdownTimeout(t *testing.T) {
+func TestServer_FinalizeReturnsTheShutdownTimeout(t *testing.T) {
 	hook := newLogHook(t)
 	api := &blockingRegister{started: make(chan struct{}), release: make(chan struct{})}
 	builder := NewBuilder().APIRegistration(api).OverrideDefaultMiddleware(true)
@@ -136,9 +136,10 @@ func TestServer_LogsTheShutdownTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	var executeErr error
 	go func() {
 		defer close(done)
-		_ = task.Execute(ctx, cancel)
+		executeErr = task.Execute(ctx, cancel)
 	}()
 	address := waitForListenAddress(t, hook)
 
@@ -157,7 +158,16 @@ func TestServer_LogsTheShutdownTimeout(t *testing.T) {
 	close(api.release)
 	<-requestDone
 
-	entry := findLogEntry(hook, "the http server did not shut down gracefully before the timeout")
-	require.NotNil(t, entry)
-	assert.Equal(t, logrus.ErrorLevel, entry.Level)
+	// The server stopped as requested, but its shutdown failed: the task must report it, like before echo v5.
+	assert.NoError(t, executeErr)
+	err = task.Finalize()
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "server shutdown not properly")
+}
+
+func TestServer_FinalizeWithoutShutdownError(t *testing.T) {
+	hook := newLogHook(t)
+	address := startServer(t, hook, NewBuilder().APIRegistration(&mockRegister{}).OverrideDefaultMiddleware(true))
+	assert.NotEmpty(t, address)
+	// startServer stops the server and checks Finalize returns no error at the end of the test.
 }

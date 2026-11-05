@@ -456,6 +456,8 @@ type server struct {
 	readTimeout       time.Duration
 	writeTimeout      time.Duration
 	idleTimeout       time.Duration
+	// shutdownErr is the error of the graceful shutdown done by Execute (like a timeout), returned by Finalize.
+	shutdownErr error
 }
 
 func (s *server) String() string {
@@ -488,8 +490,10 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 		HidePort:         true,
 		ListenerAddrFunc: s.logListenerAddr,
 		GracefulTimeout:  s.shutdownTimeout,
+		// echo logs this error and returns nil. It is returned by Finalize instead, so the task reports the failure.
+		// It is called before Start returns, so before Finalize is called.
 		OnShutdownError: func(err error) {
-			logrus.WithError(err).Error("the http server did not shut down gracefully before the timeout")
+			s.shutdownErr = err
 		},
 		BeforeServeFunc: func(httpServer *http.Server) error {
 			s.configureHTTPServer(httpServer)
@@ -552,18 +556,17 @@ func (logrusErrorWriter) Write(p []byte) (int, error) {
 var defaultHTTPErrorHandler = echo.DefaultHTTPErrorHandler(false)
 
 // handleError is the central error handler of the server, called with the error returned by the middleware chain.
-// The errors that don't carry an HTTP status (like a panic recovered by the middleware Recover or an unexpected error) are logged,
-// as nothing turned them into a response. Then, like the default echo handler, it writes the error as a JSON response
-// without exposing the internal errors.
+// The panics recovered by the middleware Recover and the errors that don't carry an HTTP status (unexpected errors)
+// are logged, as nothing turned them into a response. Then, like the default echo handler, it writes the error as a JSON
+// response without exposing the internal errors.
 func handleError(c *echo.Context, err error) {
-	if echo.StatusCode(err) == 0 {
-		entry := logrus.WithField("method", c.Request().Method).WithField("uri", c.Request().URL.EscapedPath())
-		var panicErr *middleware.PanicStackError
-		if errors.As(err, &panicErr) {
-			entry.WithError(panicErr.Err).WithField("stack", string(panicErr.Stack)).Error("panic recovered while handling the request")
-		} else {
-			entry.WithError(err).Error("unexpected error while handling the request")
-		}
+	entry := logrus.WithField("method", c.Request().Method).WithField("uri", c.Request().URL.EscapedPath())
+	// A panic is checked first: its value can carry an HTTP status (like panic(echo.NewHTTPError(...))).
+	var panicErr *middleware.PanicStackError
+	if errors.As(err, &panicErr) {
+		entry.WithError(panicErr.Err).WithField("stack", string(panicErr.Stack)).Error("panic recovered while handling the request")
+	} else if echo.StatusCode(err) == 0 {
+		entry.WithError(err).Error("unexpected error while handling the request")
 	}
 	defaultHTTPErrorHandler(c, err)
 }
@@ -604,6 +607,9 @@ func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
 
 func (s *server) Finalize() error {
 	// The server is gracefully stopped by Execute once the context is canceled.
+	if s.shutdownErr != nil {
+		return fmt.Errorf("server shutdown not properly: %w", s.shutdownErr)
+	}
 	return nil
 }
 

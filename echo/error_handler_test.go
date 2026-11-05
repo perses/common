@@ -78,6 +78,9 @@ func (r *errorRegister) RegisterRoute(e *echoLib.Echo) {
 	e.GET("/panic", func(_ *echoLib.Context) error {
 		panic("boom")
 	})
+	e.GET("/panic-http-error", func(_ *echoLib.Context) error {
+		panic(echoLib.NewHTTPError(http.StatusServiceUnavailable, "maintenance"))
+	})
 	e.GET("/unexpected", func(_ *echoLib.Context) error {
 		return errors.New("unexpected failure")
 	})
@@ -97,6 +100,8 @@ func TestServer_ErrorHandling(t *testing.T) {
 		expectedCode  int
 		expectedBody  string
 		expectedError string
+		// expectedPanic is the error of the panic logged with its stack trace.
+		expectedPanic string
 	}{
 		{
 			name:          "panic",
@@ -105,6 +110,17 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedCode:  http.StatusInternalServerError,
 			expectedBody:  `{"message":"Internal Server Error"}`,
 			expectedError: "panic recovered while handling the request",
+			expectedPanic: "boom",
+		},
+		{
+			// The value of the panic carries an HTTP status, it must be logged as a panic anyway.
+			name:          "panic with an HTTP error",
+			path:          "/panic-http-error",
+			route:         "/panic-http-error",
+			expectedCode:  http.StatusServiceUnavailable,
+			expectedBody:  `{"message":"maintenance"}`,
+			expectedError: "panic recovered while handling the request",
+			expectedPanic: echoLib.NewHTTPError(http.StatusServiceUnavailable, "maintenance").Error(),
 		},
 		{
 			name:          "unexpected error",
@@ -179,8 +195,8 @@ func TestServer_ErrorHandling(t *testing.T) {
 			assert.Equal(t, logrus.ErrorLevel, errorEntry.Level)
 			assert.Equal(t, http.MethodGet, errorEntry.Data["method"])
 			assert.Equal(t, tt.path, errorEntry.Data["uri"])
-			if tt.name == "panic" {
-				assert.EqualError(t, errorEntry.Data[logrus.ErrorKey].(error), "boom")
+			if tt.expectedPanic != "" {
+				assert.EqualError(t, errorEntry.Data[logrus.ErrorKey].(error), tt.expectedPanic)
 				assert.Contains(t, errorEntry.Data["stack"], "goroutine")
 			}
 		})
