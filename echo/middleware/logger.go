@@ -57,6 +57,8 @@ func LoggerWithConfig(config LoggerConfig) echo.MiddlewareFunc {
 			// Only the escaped path is logged: the query string can contain sensitive data (tokens, OAuth codes, etc.),
 			// and the escaped path cannot contain control characters.
 			path := c.Request().URL.EscapedPath()
+			// The path is saved, so the other logs about this request (like the one of the central error handler) use the same.
+			c.Set(contextKeyRequestPath, path)
 			route := c.Path()
 			// The error is not handled here, it is returned to be handled by the central error handler of echo.
 			// The status logged is the one of the response that will be sent, resolved from this error.
@@ -74,4 +76,17 @@ func LoggerWithConfig(config LoggerConfig) echo.MiddlewareFunc {
 			return err
 		}
 	}
+}
+
+// contextKeyRequestPath is the key of the echo context in which the Logger middleware saves the escaped path of the request.
+const contextKeyRequestPath = "github.com/perses/common/echo/middleware.requestPath"
+
+// RequestPath returns the escaped path of the request as logged by the Logger middleware, before the next handlers
+// possibly rewrote it (like a reverse proxy). Like that, every log about the same request uses the same path.
+// It returns the current escaped path of the request when the Logger middleware didn't handle it.
+func RequestPath(c *echo.Context) string {
+	if path, ok := c.Get(contextKeyRequestPath).(string); ok {
+		return path
+	}
+	return c.Request().URL.EscapedPath()
 }

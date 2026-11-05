@@ -560,7 +560,8 @@ var defaultHTTPErrorHandler = echo.DefaultHTTPErrorHandler(false)
 // are logged, as nothing turned them into a response. Then, like the default echo handler, it writes the error as a JSON
 // response without exposing the internal errors.
 func handleError(c *echo.Context, err error) {
-	entry := logrus.WithField("method", c.Request().Method).WithField("uri", c.Request().URL.EscapedPath())
+	// The path logged by the access logger is used, as the handlers can rewrite the path of the request.
+	entry := logrus.WithField("method", c.Request().Method).WithField("uri", persesMiddleware.RequestPath(c))
 	// A panic is checked first: its value can carry an HTTP status (like panic(echo.NewHTTPError(...))).
 	var panicErr *middleware.PanicStackError
 	if errors.As(err, &panicErr) {

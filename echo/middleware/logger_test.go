@@ -125,3 +125,48 @@ func TestLogger(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestPath(t *testing.T) {
+	tests := []struct {
+		name         string
+		middleware   []echo.MiddlewareFunc
+		expectedPath string
+	}{
+		{
+			name:         "the path logged by the logger is returned, even if the handler modifies it",
+			middleware:   []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{})},
+			expectedPath: "/proxy/api%2Fv1",
+		},
+		{
+			name:         "the current path is returned when the logger doesn't handle the request",
+			middleware:   []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{Skipper: func(*echo.Context) bool { return true }})},
+			expectedPath: "/rewritten",
+		},
+		{
+			name:         "the current path is returned without the logger",
+			expectedPath: "/rewritten",
+		},
+	}
+	origOutput := logrus.StandardLogger().Out
+	logrus.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		logrus.SetOutput(origOutput)
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var path string
+			e := echo.New()
+			e.Use(tt.middleware...)
+			// Like a reverse proxy, this handler modifies the path of the request.
+			e.GET("/proxy/*", func(c *echo.Context) error {
+				c.Request().URL.Path = "/rewritten"
+				path = RequestPath(c)
+				return c.NoContent(http.StatusOK)
+			})
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/api%2Fv1", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.expectedPath, path)
+		})
+	}
+}

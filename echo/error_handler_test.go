@@ -81,6 +81,15 @@ func (r *errorRegister) RegisterRoute(e *echoLib.Echo) {
 	e.GET("/panic-http-error", func(_ *echoLib.Context) error {
 		panic(echoLib.NewHTTPError(http.StatusServiceUnavailable, "maintenance"))
 	})
+	// Like a reverse proxy, these handlers modify the path of the request before failing.
+	e.GET("/rewrite-then-panic", func(c *echoLib.Context) error {
+		c.Request().URL.Path = "/rewritten"
+		panic("boom")
+	})
+	e.GET("/rewrite-then-fail", func(c *echoLib.Context) error {
+		c.Request().URL.Path = "/rewritten"
+		return errors.New("unexpected failure")
+	})
 	e.GET("/unexpected", func(_ *echoLib.Context) error {
 		return errors.New("unexpected failure")
 	})
@@ -121,6 +130,24 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedBody:  `{"message":"maintenance"}`,
 			expectedError: "panic recovered while handling the request",
 			expectedPanic: echoLib.NewHTTPError(http.StatusServiceUnavailable, "maintenance").Error(),
+		},
+		{
+			// The error log and the access log use the path requested by the client.
+			name:          "panic after the path is rewritten",
+			path:          "/rewrite-then-panic",
+			route:         "/rewrite-then-panic",
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "panic recovered while handling the request",
+			expectedPanic: "boom",
+		},
+		{
+			name:          "unexpected error after the path is rewritten",
+			path:          "/rewrite-then-fail",
+			route:         "/rewrite-then-fail",
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "unexpected error while handling the request",
 		},
 		{
 			name:          "unexpected error",
