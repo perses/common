@@ -44,6 +44,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -214,6 +215,8 @@ func (r *Runner) WithDefaultLogrusBuilder() *Runner {
 }
 
 // Start will start the application. It is a blocking method and will give back the end once every tasks handled are done.
+// If the application is stopped by a task that failed (like the HTTP server that cannot listen on its address),
+// the process exits with the status code 1 once every task is stopped.
 func (r *Runner) Start() {
 	// build the logrus config if exists
 	if r.logrusBuilder != nil {
@@ -227,12 +230,46 @@ func (r *Runner) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	// in any case, call the cancel method to release any possible resources.
 	defer cancel()
+	// stoppedBy is the index of the first task that stopped the application by calling the cancel function.
+	stoppedBy := atomic.Int64{}
+	stoppedBy.Store(-1)
+	// results receives the error returned by each task.
+	results := make([]chan error, len(r.helpers))
 	// launch every runner
-	for _, runner := range r.helpers {
-		taskhelper.Run(ctx, cancel, runner)
+	for i, helper := range r.helpers {
+		results[i] = make(chan error, 1)
+		taskCancel := func() {
+			stoppedBy.CompareAndSwap(-1, int64(i))
+			cancel()
+		}
+		go func() {
+			err := helper.Start(ctx, taskCancel)
+			if err != nil {
+				logrus.WithError(err).Errorf("'%s' ended in error", helper.String())
+			}
+			results[i] <- err
+		}()
 	}
 	// Wait for context to be canceled or tasks to be ended and wait for graceful stop
 	taskhelper.JoinAll(ctx, r.waitTimeout, r.helpers)
+	r.exitIfStoppedByAFailure(stoppedBy.Load(), results)
+}
+
+// exitIfStoppedByAFailure exits with the status code 1 if the task that stopped the application failed.
+func (r *Runner) exitIfStoppedByAFailure(stoppedBy int64, results []chan error) {
+	if stoppedBy < 0 {
+		return
+	}
+	helper := r.helpers[stoppedBy]
+	select {
+	case <-helper.Done():
+		// The task is done, so its result is about to be sent.
+		if err := <-results[stoppedBy]; err != nil {
+			logrus.WithError(err).Fatalf("the application has been stopped because '%s' failed", helper.String())
+		}
+	default:
+		// The task didn't stop in time, it has already been logged by taskhelper.JoinAll.
+	}
 }
 
 func (r *Runner) printBannerOrMainHeader() {
