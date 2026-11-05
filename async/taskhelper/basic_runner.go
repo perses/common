@@ -71,30 +71,49 @@ func (r *runner) Start(ctx context.Context, cancelFunc context.CancelFunc) (err 
 
 	// then run the task
 	if executeErr := r.task.(async.SimpleTask).Execute(childCtx, cancelFunc); executeErr != nil {
-		err = fmt.Errorf("unable to call the execute method of the task: %w", executeErr)
-		return
+		if r.interval <= 0 {
+			err = fmt.Errorf("unable to call the execute method of the task: %w", executeErr)
+			return
+		}
+		// A periodic task is executed again at the next tick, so a single failure must not stop it.
+		if !handleExecuteError(childCtx, r.String(), "tick", executeErr) {
+			return nil
+		}
 	}
 
 	// in case the runner has an interval properly set, then we can create a ticker and periodically call the method that executes the task
-	return r.tick(childCtx, cancelFunc)
+	r.tick(childCtx, cancelFunc)
+	return nil
 }
 
-func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) error {
+func (r *runner) tick(ctx context.Context, cancelFunc context.CancelFunc) {
 	simpleTask := r.task.(async.SimpleTask)
 	if r.interval <= 0 {
-		return nil
+		return
 	}
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil {
-				return fmt.Errorf("unable to call the execute method of the task %s: %w", simpleTask.String(), executeErr)
+			if executeErr := simpleTask.Execute(ctx, cancelFunc); executeErr != nil && !handleExecuteError(ctx, simpleTask.String(), "tick", executeErr) {
+				return
 			}
 		case <-ctx.Done():
 			logrus.Debugf("task %s has been canceled", simpleTask.String())
-			return nil
+			return
 		}
 	}
+}
+
+// handleExecuteError logs the error returned by a periodic task, and tells if the task must continue.
+// A failure doesn't stop the task: it is executed again at the next tick or schedule, as the failure can be temporary.
+// Once the context is done, the error is likely caused by the cancellation, so it is logged at the debug level, and the task is stopped.
+func handleExecuteError(ctx context.Context, taskName string, nextExecution string, err error) bool {
+	if ctx.Err() != nil {
+		logrus.WithError(err).Debugf("task %s has been canceled", taskName)
+		return false
+	}
+	logrus.WithError(err).Errorf("unable to call the execute method of the task %s, it will be executed again at the next %s", taskName, nextExecution)
+	return true
 }

@@ -50,6 +50,7 @@ func New(task any) (Helper, error) {
 
 // NewTick is returning a Helper that will execute the task periodically.
 // The task can be a SimpleTask or a Task. It returns an error if it's something different
+// If an execution of the task fails, the error is logged, and the task is executed again at the next tick.
 func NewTick(task any, interval time.Duration) (Helper, error) {
 	if interval <= 0 {
 		return nil, fmt.Errorf("interval cannot be negative or equal to 0 when creating a cron")
@@ -67,6 +68,7 @@ func NewTick(task any, interval time.Duration) (Helper, error) {
 }
 
 // NewCron is returning a Helper that will execute the task according to the schedule.
+// If an execution of the task fails, the error is logged, and the task is executed again at the next schedule.
 // cronSchedule is following the standard syntax described here: https://en.wikipedia.org/wiki/Cron.
 // It also supports the predefined scheduling definitions:
 // - @yearly (or @annually) | Run once a year, midnight, Jan. 1st        | 0 0 0 1 1 *
