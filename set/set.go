@@ -16,6 +16,7 @@ package set
 import (
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -36,10 +37,10 @@ func New[T comparable](vals ...T) Set[T] {
 // It will create a new set and leave the input sets unmodified.
 func Merge[T comparable](old, new Set[T]) Set[T] {
 	if new == nil {
-		return old
+		return maps.Clone(old)
 	}
 	if old == nil {
-		return new
+		return maps.Clone(new)
 	}
 	s := Set[T]{}
 	maps.Copy(s, new)
@@ -96,11 +97,23 @@ func (s *Set[T]) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &slice); err != nil {
 		return err
 	}
-	if len(slice) == 0 {
+	return s.setDecodedValues(slice)
+}
+
+// setDecodedValues replaces the content of the set with the values decoded from JSON or YAML.
+// A decoded value may not be comparable (like a map decoded in a Set[any]), and using it as a key of the map would panic,
+// so an error is returned instead.
+func (s *Set[T]) setDecodedValues(values []T) error {
+	if len(values) == 0 {
 		return nil
 	}
-	*s = make(map[T]struct{}, len(slice))
-	for _, v := range slice {
+	for _, v := range values {
+		if !reflect.ValueOf(&v).Elem().Comparable() {
+			return fmt.Errorf("unable to add %v to the set: the value is not comparable", v)
+		}
+	}
+	*s = make(map[T]struct{}, len(values))
+	for _, v := range values {
 		s.Add(v)
 	}
 	return nil
@@ -118,49 +131,50 @@ func (s *Set[T]) UnmarshalYAML(unmarshal func(any) error) error {
 	if err := unmarshal(&slice); err != nil {
 		return err
 	}
-	if len(slice) == 0 {
-		return nil
-	}
-	*s = make(map[T]struct{}, len(slice))
-	for _, v := range slice {
-		s.Add(v)
-	}
-	return nil
+	return s.setDecodedValues(slice)
 }
 
 // compare has similar semantics to cmp.Compare except that it works for
 // strings and structs. When comparing Go structs, it only checks the struct
 // fields of string type.
-// If the compared values aren't strings or structs, they are considered equal.
+// If the compared values aren't booleans, numbers, strings or structs, they are considered equal.
+// When T is an interface, a nil value is placed first, and values of different types are ordered by type.
 func compare[T comparable](a, b T) int {
-	switch reflect.TypeOf(a).Kind() {
+	valueA := reflect.ValueOf(a)
+	valueB := reflect.ValueOf(b)
+	if !valueA.IsValid() || !valueB.IsValid() {
+		return cmp.Compare(boolToInt(valueA.IsValid()), boolToInt(valueB.IsValid()))
+	}
+	if valueA.Type() != valueB.Type() {
+		if c := cmp.Compare(valueA.Type().String(), valueB.Type().String()); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(valueA.Kind(), valueB.Kind()); c != 0 {
+			return c
+		}
+	}
+	switch valueA.Kind() {
+	case reflect.Bool:
+		return cmp.Compare(boolToInt(valueA.Bool()), boolToInt(valueB.Bool()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return cmp.Compare(
-			reflect.ValueOf(a).Int(),
-			reflect.ValueOf(b).Int(),
-		)
+		return cmp.Compare(valueA.Int(), valueB.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return cmp.Compare(
-			reflect.ValueOf(a).Uint(),
-			reflect.ValueOf(b).Uint(),
-		)
+		return cmp.Compare(valueA.Uint(), valueB.Uint())
 	case reflect.Float32, reflect.Float64:
-		return cmp.Compare(
-			reflect.ValueOf(a).Float(),
-			reflect.ValueOf(b).Float(),
-		)
+		return cmp.Compare(valueA.Float(), valueB.Float())
 	case reflect.String:
-		return cmp.Compare(
-			reflect.ValueOf(a).String(),
-			reflect.ValueOf(b).String(),
-		)
+		return cmp.Compare(valueA.String(), valueB.String())
 	case reflect.Struct:
-		return cmp.Compare(
-			buildKey(reflect.ValueOf(a)),
-			buildKey(reflect.ValueOf(b)),
-		)
+		return cmp.Compare(buildKey(valueA), buildKey(valueB))
 	}
 
+	return 0
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
 	return 0
 }
 

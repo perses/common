@@ -136,3 +136,39 @@ func TestSetUnmarshalYAML(t *testing.T) {
 		t.Errorf("Set does not contain expected elements after unmarshalling")
 	}
 }
+
+func TestMergeReturnsANewSet(t *testing.T) {
+	set := New(1, 2)
+
+	merged := Merge(set, nil)
+	merged.Add(3)
+	assert.False(t, set.Contains(3))
+
+	merged = Merge(nil, set)
+	merged.Add(4)
+	assert.False(t, set.Contains(4))
+
+	assert.Nil(t, Merge[int](nil, nil))
+}
+
+func TestSetTransformAsSliceWithInterface(t *testing.T) {
+	// The order of the map iteration is random, so the sort is checked several times.
+	for range 50 {
+		s := New[any](nil, 2, "b", true, 1, "a", false, 1.5)
+		assert.Equal(t, []any{nil, false, true, 1.5, 1, 2, "a", "b"}, s.TransformAsSlice())
+	}
+}
+
+func TestSetUnmarshalNotComparableValue(t *testing.T) {
+	var jsonSet Set[any]
+	assert.Error(t, json.Unmarshal([]byte(`["a", {"b": 1}]`), &jsonSet))
+	assert.Nil(t, jsonSet)
+
+	var yamlSet Set[any]
+	assert.Error(t, yaml.Unmarshal([]byte("- a\n- b: 1\n"), &yamlSet))
+	assert.Nil(t, yamlSet)
+
+	// The comparable values are accepted, including nil.
+	assert.NoError(t, json.Unmarshal([]byte(`["a", 1, true, null]`), &jsonSet))
+	assert.Equal(t, New[any]("a", float64(1), true, nil), jsonSet)
+}
