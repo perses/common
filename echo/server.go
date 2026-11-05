@@ -182,9 +182,7 @@ type Builder struct {
 }
 
 func NewBuilder() *Builder {
-	return &Builder{
-		activatePprof: true,
-	}
+	return &Builder{}
 }
 
 func (b *Builder) ListenAddress(addr string) {
@@ -241,6 +239,12 @@ func (b *Builder) APIRegistration(api Register) *Builder {
 	return b
 }
 
+// ActivatePprof exposes the pprof endpoints under /debug/pprof. It is disabled by default.
+// These endpoints are not authenticated and expose sensitive information about the process (like the command line arguments, the memory or the goroutine stacks),
+// so only activate them when the server is not reachable by untrusted clients.
+//
+// Note: this package imports net/http/pprof, which registers the pprof endpoints on http.DefaultServeMux.
+// So, whatever this option is, never serve http.DefaultServeMux (for example with http.ListenAndServe(addr, nil)) to untrusted clients.
 func (b *Builder) ActivatePprof(activate bool) *Builder {
 	b.activatePprof = activate
 	return b
@@ -467,7 +471,14 @@ func (s *server) Finalize() error {
 
 func (s *server) registerPprof() {
 	if s.activatePprof {
+		// The handlers are registered explicitly instead of delegating to http.DefaultServeMux,
+		// so any other handler registered on it is not exposed.
 		s.e.GET("/debug/pprof", echo.WrapHandler(http.HandlerFunc(pprof.Index)))
-		s.e.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
+		s.e.GET("/debug/pprof/cmdline", echo.WrapHandler(http.HandlerFunc(pprof.Cmdline)))
+		s.e.GET("/debug/pprof/profile", echo.WrapHandler(http.HandlerFunc(pprof.Profile)))
+		s.e.GET("/debug/pprof/symbol", echo.WrapHandler(http.HandlerFunc(pprof.Symbol)))
+		s.e.GET("/debug/pprof/trace", echo.WrapHandler(http.HandlerFunc(pprof.Trace)))
+		// pprof.Index serves the named profiles (heap, goroutine, allocs, ...) under /debug/pprof/<name>.
+		s.e.GET("/debug/pprof/*", echo.WrapHandler(http.HandlerFunc(pprof.Index)))
 	}
 }
