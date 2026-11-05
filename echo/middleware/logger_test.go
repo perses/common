@@ -19,7 +19,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/sirupsen/logrus"
 	logrusTest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -42,14 +42,14 @@ func TestLogger(t *testing.T) {
 
 	e := echo.New()
 	e.Use(Logger())
-	handler := func(c echo.Context) error {
+	handler := func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	}
 	e.GET("/api/v1/users", handler)
 	e.GET("/api/v1/projects/:project", handler)
 	e.GET("/metrics", handler)
 	// Like a reverse proxy, this handler modifies the path of the request.
-	e.GET("/proxy/*", func(c echo.Context) error {
+	e.GET("/proxy/*", func(c *echo.Context) error {
 		c.Request().URL.Path = "/rewritten"
 		return c.NoContent(http.StatusOK)
 	})
@@ -122,6 +122,51 @@ func TestLogger(t *testing.T) {
 			require.NotNil(t, entry)
 			assert.Equal(t, tt.expectedLevel, entry.Level)
 			assert.Equal(t, tt.expectedURI, entry.Data["uri"])
+		})
+	}
+}
+
+func TestRequestPath(t *testing.T) {
+	tests := []struct {
+		name         string
+		middleware   []echo.MiddlewareFunc
+		expectedPath string
+	}{
+		{
+			name:         "the path logged by the logger is returned, even if the handler modifies it",
+			middleware:   []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{})},
+			expectedPath: "/proxy/api%2Fv1",
+		},
+		{
+			name:         "the current path is returned when the logger doesn't handle the request",
+			middleware:   []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{Skipper: func(*echo.Context) bool { return true }})},
+			expectedPath: "/rewritten",
+		},
+		{
+			name:         "the current path is returned without the logger",
+			expectedPath: "/rewritten",
+		},
+	}
+	origOutput := logrus.StandardLogger().Out
+	logrus.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		logrus.SetOutput(origOutput)
+	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var path string
+			e := echo.New()
+			e.Use(tt.middleware...)
+			// Like a reverse proxy, this handler modifies the path of the request.
+			e.GET("/proxy/*", func(c *echo.Context) error {
+				c.Request().URL.Path = "/rewritten"
+				path = RequestPath(c)
+				return c.NoContent(http.StatusOK)
+			})
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/api%2Fv1", nil))
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.expectedPath, path)
 		})
 	}
 }

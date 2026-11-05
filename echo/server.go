@@ -58,14 +58,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/perses/common/async"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors/version"
@@ -332,19 +334,9 @@ func (b *Builder) build() (*server, error) {
 		if b.gzipSkipper == nil {
 			b.gzipSkipper = middleware.DefaultSkipper
 		}
-		defaultMiddleware := []echo.MiddlewareFunc{
-			// Activate recover middleware to recover from panics anywhere in the chain.
-			// It prints stack trace and handles the control to the centralized HTTPErrorHandler.
-			// More information here: https://echo.labstack.com/middleware/recover
-			middleware.Recover(),
-			persesMiddleware.Logger(),
-			middleware.GzipWithConfig(
-				middleware.GzipConfig{
-					Skipper: b.gzipSkipper,
-					Level:   5,
-				},
-			),
-		}
+		// The logger and the metrics are executed first, so they see the result of every request.
+		// It includes the panics, as the middleware Recover turns them into errors returned to the previous middlewares.
+		defaultMiddleware := []echo.MiddlewareFunc{persesMiddleware.Logger()}
 		if b.promRegisterer == nil {
 			b.promRegisterer = prometheus.DefaultRegisterer
 		}
@@ -354,8 +346,19 @@ func (b *Builder) build() (*server, error) {
 				return nil, err
 			}
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
-
 		}
+		defaultMiddleware = append(defaultMiddleware,
+			// Recover from the panics anywhere in the rest of the chain.
+			// The panic is returned as an error (with the stack trace) that is logged by the central error handler.
+			// More information here: https://echo.labstack.com/docs/middleware/recover
+			middleware.Recover(),
+			middleware.GzipWithConfig(
+				middleware.GzipConfig{
+					Skipper: b.gzipSkipper,
+					Level:   5,
+				},
+			),
+		)
 		mdws = append(defaultMiddleware, mdws...)
 	}
 
@@ -382,9 +385,7 @@ func (b *Builder) build() (*server, error) {
 		logrus.Warn("--web.tls-min-version, --web.tls-max-version and --web.tls-cipher-suites have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
 	}
 
-	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = hidePort
+	e := echo.NewWithConfig(echo.Config{HTTPErrorHandler: handleError})
 	readHeaderTimeout := b.readHeaderTimeout
 	if readHeaderTimeout == 0 {
 		readHeaderTimeout = defaultReadHeaderTimeout
@@ -393,25 +394,23 @@ func (b *Builder) build() (*server, error) {
 			readHeaderTimeout = min(b.readTimeout, defaultReadHeaderTimeout)
 		}
 	}
-	for _, httpServer := range []*http.Server{e.Server, e.TLSServer} {
-		httpServer.ReadHeaderTimeout = readHeaderTimeout
-		httpServer.ReadTimeout = b.readTimeout
-		httpServer.WriteTimeout = b.writeTimeout
-		httpServer.IdleTimeout = cmp.Or(b.idleTimeout, defaultIdleTimeout)
-	}
 	return &server{
-		addr:            b.addr,
-		apis:            b.apis,
-		e:               e,
-		cert:            cert,
-		key:             key,
-		tlsMinVersion:   parsedMinVersion,
-		tlsMaxVersion:   parsedMaxVersion,
-		tlsCipherSuites: parsedCipherSuites,
-		mdws:            mdws,
-		preMDWs:         b.preMDWs,
-		shutdownTimeout: 30 * time.Second,
-		activatePprof:   b.activatePprof,
+		addr:              b.addr,
+		apis:              b.apis,
+		e:                 e,
+		cert:              cert,
+		key:               key,
+		tlsMinVersion:     parsedMinVersion,
+		tlsMaxVersion:     parsedMaxVersion,
+		tlsCipherSuites:   parsedCipherSuites,
+		mdws:              mdws,
+		preMDWs:           b.preMDWs,
+		shutdownTimeout:   30 * time.Second,
+		activatePprof:     b.activatePprof,
+		readHeaderTimeout: readHeaderTimeout,
+		readTimeout:       b.readTimeout,
+		writeTimeout:      b.writeTimeout,
+		idleTimeout:       cmp.Or(b.idleTimeout, defaultIdleTimeout),
 	}, nil
 }
 
@@ -441,18 +440,24 @@ func (b *Builder) registerMetrics() (*persesMiddleware.Metrics, error) {
 
 type server struct {
 	async.Task
-	addr            string
-	apis            []Register
-	e               *echo.Echo
-	cert            string
-	key             string
-	tlsMinVersion   uint16
-	tlsMaxVersion   uint16
-	tlsCipherSuites []uint16
-	mdws            []echo.MiddlewareFunc
-	preMDWs         []echo.MiddlewareFunc
-	shutdownTimeout time.Duration
-	activatePprof   bool
+	addr              string
+	apis              []Register
+	e                 *echo.Echo
+	cert              string
+	key               string
+	tlsMinVersion     uint16
+	tlsMaxVersion     uint16
+	tlsCipherSuites   []uint16
+	mdws              []echo.MiddlewareFunc
+	preMDWs           []echo.MiddlewareFunc
+	shutdownTimeout   time.Duration
+	activatePprof     bool
+	readHeaderTimeout time.Duration
+	readTimeout       time.Duration
+	writeTimeout      time.Duration
+	idleTimeout       time.Duration
+	// shutdownErr is the error of the graceful shutdown done by Execute (like a timeout), returned by Finalize.
+	shutdownErr error
 }
 
 func (s *server) String() string {
@@ -478,42 +483,101 @@ func (s *server) Initialize() error {
 }
 
 func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
-	// start server
-	// The channel is buffered, so the go routine is not blocked when the server is stopped after the end of this method.
-	serverErr := make(chan error, 1)
-	go func() {
-		var err error
-		if s.cert != "" && s.key != "" {
-			err = s.startTLS()
-		} else {
-			err = s.e.Start(s.addr)
+	startConfig := echo.StartConfig{
+		Address:    s.addr,
+		HideBanner: true,
+		// echo logs the address with its own logger, so it is logged with logrus by logListenerAddr instead.
+		HidePort:         true,
+		ListenerAddrFunc: s.logListenerAddr,
+		GracefulTimeout:  s.shutdownTimeout,
+		// echo logs this error and returns nil. It is returned by Finalize instead, so the task reports the failure.
+		// It is called before Start returns, so before Finalize is called.
+		OnShutdownError: func(err error) {
+			s.shutdownErr = err
+		},
+		BeforeServeFunc: func(httpServer *http.Server) error {
+			s.configureHTTPServer(httpServer)
+			return nil
+		},
+	}
+	if s.cert != "" && s.key != "" {
+		tlsConfig, err := s.tlsConfig()
+		if err != nil {
+			cancelFunc()
+			return fmt.Errorf("http server stopped unexpectedly: %w", err)
 		}
-		logrus.Debug("go routine running the http server has been stopped.")
-		serverErr <- err
-	}()
-	// Wait for the end of the task or cancellation
-	select {
-	case err := <-serverErr:
-		// Server ended unexpectedly (for example, the address is already in use, or the TLS certificate cannot be loaded)
+		startConfig.TLSConfig = tlsConfig
+	}
+	// Start blocks until the context is canceled, then it gracefully shuts down the server.
+	// It returns before if the server cannot start or stops unexpectedly (for example, when the address is already in use).
+	err := startConfig.Start(ctx, s.e)
+	logrus.Debug("http server has been stopped")
+	if ctx.Err() == nil {
 		// In our ecosystem, as we are producing each time an HTTP API, if the HTTP api stopped, we want to stop the whole application.
 		// That's why we are calling the parent cancelFunc
 		cancelFunc()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("http server stopped unexpectedly: %w", err)
-		}
-	case <-ctx.Done():
-		// Cancellation requested by the parent context. The server is stopped by the method Finalize.
-		logrus.Debug("server cancellation requested")
+	}
+	if err != nil {
+		return fmt.Errorf("http server stopped unexpectedly: %w", err)
 	}
 	return nil
 }
 
-// startTLS starts the HTTPS server.
-// echo.StartTLS is not used because it replaces the TLS configuration, and it loads the certificate only once.
-func (s *server) startTLS() error {
+func (s *server) logListenerAddr(addr net.Addr) {
+	if hidePort {
+		return
+	}
+	scheme := "http"
+	if s.cert != "" {
+		scheme = "https"
+	}
+	logrus.Infof("%s server started on %s", scheme, addr)
+}
+
+// configureHTTPServer sets the timeouts and the error logger of the http.Server created by echo.
+// Every timeout is set, even when it is zero, as echo sets a default ReadTimeout.
+func (s *server) configureHTTPServer(httpServer *http.Server) {
+	httpServer.ReadHeaderTimeout = s.readHeaderTimeout
+	httpServer.ReadTimeout = s.readTimeout
+	httpServer.WriteTimeout = s.writeTimeout
+	httpServer.IdleTimeout = s.idleTimeout
+	// The errors of the server (like the TLS handshake errors) are logged with logrus instead of the logger of echo.
+	httpServer.ErrorLog = log.New(logrusErrorWriter{}, "", 0)
+}
+
+// logrusErrorWriter logs with logrus, as an error, every line written by a log.Logger.
+type logrusErrorWriter struct{}
+
+func (logrusErrorWriter) Write(p []byte) (int, error) {
+	logrus.Error(strings.TrimSuffix(string(p), "\n"))
+	return len(p), nil
+}
+
+var defaultHTTPErrorHandler = echo.DefaultHTTPErrorHandler(false)
+
+// handleError is the central error handler of the server, called with the error returned by the middleware chain.
+// The panics recovered by the middleware Recover and the errors that don't carry an HTTP status (unexpected errors)
+// are logged, as nothing turned them into a response. Then, like the default echo handler, it writes the error as a JSON
+// response without exposing the internal errors.
+func handleError(c *echo.Context, err error) {
+	// The path logged by the access logger is used, as the handlers can rewrite the path of the request.
+	entry := logrus.WithField("method", c.Request().Method).WithField("uri", persesMiddleware.RequestPath(c))
+	// A panic is checked first: its value can carry an HTTP status (like panic(echo.NewHTTPError(...))).
+	var panicErr *middleware.PanicStackError
+	if errors.As(err, &panicErr) {
+		entry.WithError(panicErr.Err).WithField("stack", string(panicErr.Stack)).Error("panic recovered while handling the request")
+	} else if echo.StatusCode(err) == 0 {
+		entry.WithError(err).Error("unexpected error while handling the request")
+	}
+	defaultHTTPErrorHandler(c, err)
+}
+
+// tlsConfig builds the TLS configuration of the HTTPS server.
+// The certificate is provided by a reloader, so a rotated certificate is used without restarting the server.
+func (s *server) tlsConfig() (*tls.Config, error) {
 	reloader, err := newCertificateReloader(s.cert, s.key)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tlsConfig := &tls.Config{
 		MinVersion:     s.tlsMinVersion,
@@ -521,21 +585,17 @@ func (s *server) startTLS() error {
 		CipherSuites:   s.tlsCipherSuites,
 		GetCertificate: reloader.GetCertificate,
 	}
-	switch {
-	case s.e.DisableHTTP2:
-	case !isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites):
-		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, required by HTTP/2")
-	default:
+	if isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites) {
 		tlsConfig.NextProtos = []string{"h2"}
+	} else {
+		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, required by HTTP/2")
 	}
-	s.e.TLSServer.Addr = s.addr
-	s.e.TLSServer.TLSConfig = tlsConfig
-	return s.e.StartServer(s.e.TLSServer)
+	return tlsConfig, nil
 }
 
 // isHTTP2Compatible tells if HTTP/2 can be offered with the given TLS settings.
 // HTTP/2 requires one of these cipher suites when TLS 1.2 is allowed (RFC 7540, section 9.2.2),
-// otherwise net/http refuses to start the server.
+// otherwise the connections of the clients negotiating HTTP/2 with another cipher suite are rejected.
 func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
 	if len(cipherSuites) == 0 || minVersion >= tls.VersionTLS13 {
 		return true
@@ -547,12 +607,9 @@ func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
 }
 
 func (s *server) Finalize() error {
-	logrus.Debug("try to shutdown the http server")
-	shutdownCtx, shutdownCancelFunc := context.WithTimeout(context.Background(), s.shutdownTimeout)
-	// call shutdownCancelFunc to release the resources in case the task ended before the timeout
-	defer shutdownCancelFunc()
-	if err := s.e.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server shutdown not properly: %w", err)
+	// The server is gracefully stopped by Execute once the context is canceled.
+	if s.shutdownErr != nil {
+		return fmt.Errorf("server shutdown not properly: %w", s.shutdownErr)
 	}
 	return nil
 }

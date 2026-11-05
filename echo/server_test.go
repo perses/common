@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	echoLib "github.com/labstack/echo/v4"
+	echoLib "github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
