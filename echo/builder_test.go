@@ -65,7 +65,7 @@ func requestCount(t *testing.T, registry *prometheus.Registry) float64 {
 	require.NoError(t, err)
 	total := float64(0)
 	for _, family := range families {
-		if family.GetName() != "test_http_request_total" {
+		if family.GetName() != "test_http_requests_total" {
 			continue
 		}
 		for _, metric := range family.GetMetric() {
@@ -80,7 +80,7 @@ func TestBuilder_MetricsRegistrationError(t *testing.T) {
 	// A different metric with the same name is already registered.
 	registry.MustRegister(prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: "test",
-		Name:      "http_request_total",
+		Name:      "http_requests_total",
 		Help:      "Another metric",
 	}))
 	_, err := NewBuilder().
