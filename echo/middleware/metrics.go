@@ -43,13 +43,13 @@ func NewMetrics(namespace string) (*Metrics, error) {
 	return &Metrics{
 		totalHTTPRequest: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace,
-			Name:      "http_request_total",
-			Help:      "Total of HTTP requests that received the API",
+			Name:      "http_requests_total",
+			Help:      "Total number of HTTP requests received by the API.",
 		}, []string{labelCode, labelHandler, labelMethod}),
 		durationHTTPRequest: prometheus.NewSummaryVec(prometheus.SummaryOpts{
 			Namespace: namespace,
-			Name:      "http_request_duration_second",
-			Help:      "Http request latencies in second",
+			Name:      "http_request_duration_seconds",
+			Help:      "HTTP request latencies in seconds.",
 		}, []string{labelHandler, labelMethod}),
 	}, nil
 }
