@@ -2,10 +2,14 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type foo struct {
@@ -49,113 +53,95 @@ func TestResolveImpl_EmptyEnvPrefix(t *testing.T) {
 	assert.Equal(t, "value", config.FieldByEnv1)
 }
 
+// callbackRecorder records the configs received by a change callback.
+// The callback is called by the goroutine watching the config file, so the access to the configs is synchronized.
+type callbackRecorder[T any] struct {
+	mutex   sync.Mutex
+	configs []T
+}
+
+func (r *callbackRecorder[T]) record(config *T) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.configs = append(r.configs, *config)
+}
+
+func (r *callbackRecorder[T]) received() []T {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	return slices.Clone(r.configs)
+}
+
+const (
+	waitFor = 5 * time.Second
+	tick    = 10 * time.Millisecond
+	// noCallbackDelay is the time to wait to check that the callbacks are not called.
+	noCallbackDelay = 500 * time.Millisecond
+)
+
 func TestResolveImpl_WatchConfigShouldNotifyOnlyWhenValuesChange(t *testing.T) {
 	type Config struct {
 		Field1 string `yaml:"field1"`
 	}
 
-	const configFile = "ut_resolve_1.yaml"
+	configFile := filepath.Join(t.TempDir(), "ut_resolve_1.yaml")
 	const initialContent = "field1: toto"
 	const changedContent = "field1: yoyo"
 
-	err := os.WriteFile(configFile, []byte(initialContent), 0777)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	defer os.Remove(configFile) //nolint: errcheck
-
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, os.WriteFile(configFile, []byte(initialContent), 0600))
 
 	var config Config
-	var updatedConfig Config
-
-	callbackCallCount := 0
-	err = NewResolver[Config]().
+	recorder := &callbackRecorder[Config]{}
+	err := NewResolver[Config]().
 		SetConfigFile(configFile).
-		AddChangeCallback(func(newConfig *Config) {
-			callbackCallCount++
-			updatedConfig = *newConfig
-		}).
+		AddChangeCallback(recorder.record).
 		Resolve(&config).
 		Verify()
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	require.NoError(t, err)
 
 	// No change, callbacks shouldn't be called
-	err = os.WriteFile(configFile, []byte(initialContent), 0777)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Equal(t, 0, callbackCallCount)
+	require.NoError(t, os.WriteFile(configFile, []byte(initialContent), 0600))
+	assert.Never(t, func() bool {
+		return len(recorder.received()) > 0
+	}, noCallbackDelay, tick)
 
 	// Changes done, callbacks must be called
-	err = os.WriteFile(configFile, []byte(changedContent), 0777)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Equal(t, 1, callbackCallCount)
+	require.NoError(t, os.WriteFile(configFile, []byte(changedContent), 0600))
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, []Config{{Field1: "yoyo"}}, recorder.received())
+	}, waitFor, tick)
 	assert.Equal(t, "toto", config.Field1)
-	assert.Equal(t, "yoyo", updatedConfig.Field1)
 }
 
 func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 	type Config []int
 
-	const configFile = "ut_resolve_2.yaml"
+	configFile := filepath.Join(t.TempDir(), "ut_resolve_2.yaml")
 	const initialContent = "[0,1]"
 	const changedContent = "[3,4,5]"
 
-	err := os.WriteFile(configFile, []byte(initialContent), 0777)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	defer os.Remove(configFile) //nolint: errcheck
-
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, os.WriteFile(configFile, []byte(initialContent), 0600))
 
 	var config Config
-	var updatedConfig Config
-
-	callbackCallCount := 0
-	err = NewResolver[Config]().
+	recorder := &callbackRecorder[Config]{}
+	err := NewResolver[Config]().
 		SetConfigFile(configFile).
-		AddChangeCallback(func(newConfig *Config) {
-			callbackCallCount++
-			updatedConfig = *newConfig
-		}).
+		AddChangeCallback(recorder.record).
 		Resolve(&config).
 		Verify()
+	require.NoError(t, err)
 
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	// Only the elements coming from the file are checked:
+	// when no environment prefix is set, lamenv appends an empty element to a slice.
+	require.GreaterOrEqual(t, len(config), 2)
+	assert.Equal(t, Config{0, 1}, config[:2])
 
 	// Changes done, callbacks must be called
-	err = os.WriteFile(configFile, []byte(changedContent), 0777)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Equal(t, 1, callbackCallCount)
-
-	assert.Equal(t, 0, config[0])
-	assert.Equal(t, 1, config[1])
-
-	assert.Equal(t, 3, updatedConfig[0])
-	assert.Equal(t, 4, updatedConfig[1])
-	assert.Equal(t, 5, updatedConfig[2])
+	require.NoError(t, os.WriteFile(configFile, []byte(changedContent), 0600))
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		received := recorder.received()
+		require.Len(c, received, 1)
+		require.GreaterOrEqual(c, len(received[0]), 3)
+		assert.Equal(c, Config{3, 4, 5}, received[0][:3])
+	}, waitFor, tick)
 }
