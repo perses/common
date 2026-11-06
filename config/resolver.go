@@ -26,7 +26,7 @@
 //
 // The Resolver at the end returns an object that implements the interface Validator.
 // Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
-// The object returned by the Resolver will loop other different structs that are parts of the config and execute the method Verify if implemented.
+// The object returned by the Resolver will loop other different structs that are parts of the config (including the elements of a slice or an array, and the values of a map) and execute the method Verify if implemented.
 //
 // Example:
 //
@@ -121,11 +121,21 @@ func verifyRec(conf reflect.Value) error {
 		v = v.Elem()
 	}
 	switch v.Kind() {
-	case reflect.Slice:
+	case reflect.Slice, reflect.Array:
 		for i := 0; i < v.Len(); i++ {
 			if err := verifyRec(v.Index(i)); err != nil {
 				return err
 			}
+		}
+	case reflect.Map:
+		for iter := v.MapRange(); iter.Next(); {
+			// A map value cannot be set, so a copy is verified and then saved in the map, in case the method Verify() is setting some parameter.
+			value := reflect.New(v.Type().Elem()).Elem()
+			value.Set(iter.Value())
+			if err := verifyRec(value); err != nil {
+				return err
+			}
+			v.SetMapIndex(iter.Key(), value)
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
