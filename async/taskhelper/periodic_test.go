@@ -77,6 +77,32 @@ func TestCron_ExecutedAgainAfterAnError(t *testing.T) {
 	})
 }
 
+func TestNewCron_Schedule(t *testing.T) {
+	testSuite := []struct {
+		name     string
+		schedule string
+		wantErr  string
+	}{
+		{name: "standard", schedule: "*/5 * * * *"},
+		{name: "descriptor", schedule: "@daily"},
+		{name: "interval", schedule: "@every 1s"},
+		{name: "leap day", schedule: "0 0 29 2 *"},
+		{name: "never matches", schedule: "0 0 31 2 *", wantErr: `the cron schedule "0 0 31 2 *" never matches any date`},
+	}
+	for _, test := range testSuite {
+		t.Run(test.name, func(t *testing.T) {
+			helper, err := NewCron(&failingTask{}, test.schedule)
+			if test.wantErr != "" {
+				assert.ErrorContains(t, err, test.wantErr)
+				assert.Nil(t, helper)
+				return
+			}
+			assert.NoError(t, err)
+			assert.NotNil(t, helper)
+		})
+	}
+}
+
 func TestNew_ReturnTheExecuteError(t *testing.T) {
 	task := &failingTask{failures: 1}
 	helper, err := New(task)
