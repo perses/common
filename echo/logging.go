@@ -17,6 +17,9 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"net"
+	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -44,7 +47,14 @@ func (h logrusHandler) Handle(ctx context.Context, record slog.Record) error {
 		return true
 	})
 	// logrus uses the current time when the time of the record is zero.
-	logrus.WithContext(ctx).WithTime(record.Time).WithFields(fields).Log(logrusLevel(record.Level), record.Message)
+	entry := logrus.WithContext(ctx).WithTime(record.Time).WithFields(fields)
+	// When logrus reports the caller, it would report this method, so the caller of slog is given instead.
+	// It is only set in this case, as logrus writes the caller as soon as it is set.
+	if record.PC != 0 && logrus.StandardLogger().ReportCaller {
+		frame, _ := runtime.CallersFrames([]uintptr{record.PC}).Next()
+		entry.Caller = &frame
+	}
+	entry.Log(logrusLevel(record.Level), record.Message)
 	return nil
 }
 
@@ -85,7 +95,7 @@ func addField(fields logrus.Fields, prefix string, attr slog.Attr) {
 }
 
 // logrusLevel converts a slog level to the closest logrus level.
-// The levels Fatal and Panic are never returned, as logrus would exit or panic after logging.
+// slog has no level above Error, so the levels Fatal and Panic of logrus (for the errors stopping the process) are never returned.
 func logrusLevel(level slog.Level) logrus.Level {
 	switch {
 	case level >= slog.LevelError:
@@ -102,17 +112,43 @@ func logrusLevel(level slog.Level) logrus.Level {
 }
 
 // httpServerErrorWriter writes with logrus every line logged by the http.Server.
-// The TLS handshake errors are caused by the clients (like a load balancer only checking that the port is open, or a client
-// not supporting the TLS versions or cipher suites configured), so they are logged as warnings.
-// The other errors (like a panic not recovered by a middleware) are logged as errors.
+// Most of these errors are caused by the clients (like the TLS handshake errors, or the HTTP/2 protocol errors), so they are
+// logged as warnings, as any client can trigger them. Only the defects of the server (see httpServerDefects) are logged as errors.
 type httpServerErrorWriter struct{}
+
+// httpServerDefects are the beginnings of the errors logged by the http.Server (net/http and its HTTP/2 server)
+// that are caused by the server itself: a handler, or the system.
+var httpServerDefects = []string{
+	"http: panic serving",
+	"http2: panic serving",
+	"http: superfluous response.WriteHeader call",
+	// response.Write and response.WriteHeader on a hijacked connection.
+	"http: response.Write",
+	"http: invalid Content-Length",
+	"http: WriteHeader called with both Transfer-Encoding",
+	"ignoring invalid trailer",
+	"http: Accept error",
+	"http: error reading directory",
+}
 
 func (httpServerErrorWriter) Write(p []byte) (int, error) {
 	message := strings.TrimSuffix(string(p), "\n")
-	level := logrus.ErrorLevel
-	if strings.HasPrefix(message, "http: TLS handshake error") {
-		level = logrus.WarnLevel
+	level := logrus.WarnLevel
+	if slices.ContainsFunc(httpServerDefects, func(prefix string) bool { return strings.HasPrefix(message, prefix) }) {
+		level = logrus.ErrorLevel
 	}
 	logrus.StandardLogger().Log(level, message)
 	return len(p), nil
+}
+
+// logListenerAddr logs the address listened by the server, unless it is hidden with the flag --web.hide-port.
+func (s *server) logListenerAddr(addr net.Addr) {
+	if hidePort {
+		return
+	}
+	scheme := "http"
+	if s.cert != "" {
+		scheme = "https"
+	}
+	logrus.Infof("%s server started on %s", scheme, addr)
 }

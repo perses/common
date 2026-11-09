@@ -16,195 +16,22 @@ package echo
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	echoLib "github.com/labstack/echo/v5"
 	"github.com/sirupsen/logrus"
-	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestServer_ConfigureHTTPServer(t *testing.T) {
-	hook := newLogHook(t)
-	s, err := NewBuilder().
-		APIRegistration(&mockRegister{}).
-		OverrideDefaultMiddleware(true).
-		build()
-	require.NoError(t, err)
-
-	// echo creates the http.Server with a ReadTimeout of 30s, which must not be kept, as there is no read timeout by default.
-	httpServer := &http.Server{ReadTimeout: 30 * time.Second}
-	s.configureHTTPServer(httpServer)
-	assert.Equal(t, defaultReadHeaderTimeout, httpServer.ReadHeaderTimeout)
-	assert.Equal(t, time.Duration(0), httpServer.ReadTimeout)
-	assert.Equal(t, time.Duration(0), httpServer.WriteTimeout)
-	assert.Equal(t, defaultIdleTimeout, httpServer.IdleTimeout)
-
-	// The errors of the server are logged with logrus. The TLS handshake errors are caused by the clients, so they are warnings.
-	require.NotNil(t, httpServer.ErrorLog)
-	tests := []struct {
-		name          string
-		line          string
-		expectedLevel logrus.Level
-	}{
-		{
-			name:          "TLS handshake error",
-			line:          "http: TLS handshake error from 127.0.0.1:1234: EOF",
-			expectedLevel: logrus.WarnLevel,
-		},
-		{
-			name:          "panic not recovered by a middleware",
-			line:          "http: panic serving 127.0.0.1:1234: boom",
-			expectedLevel: logrus.ErrorLevel,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			httpServer.ErrorLog.Print(tt.line)
-			entry := hook.LastEntry()
-			require.NotNil(t, entry)
-			assert.Equal(t, tt.expectedLevel, entry.Level)
-			assert.Equal(t, tt.line, entry.Message)
-		})
-	}
-}
-
-// startServer starts the server built by the builder on a random port and returns its address, read from the logs.
-// The server is stopped at the end of the test.
-func startServer(t *testing.T, hook *logrustest.Hook, builder *Builder) string {
-	t.Helper()
-	builder.ListenAddress("127.0.0.1:0")
-	task, err := builder.Build()
-	require.NoError(t, err)
-	require.NoError(t, task.Initialize())
-
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	var executeErr error
-	go func() {
-		defer close(done)
-		executeErr = task.Execute(ctx, cancel)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-		assert.NoError(t, executeErr)
-		assert.NoError(t, task.Finalize())
-	})
-	return waitForListenAddress(t, hook)
-}
-
-// waitForListenAddress waits for the server to log the address it listens on, and returns it.
-func waitForListenAddress(t *testing.T, hook *logrustest.Hook) string {
-	t.Helper()
-	var address string
-	require.Eventually(t, func() bool {
-		for _, entry := range hook.AllEntries() {
-			if after, ok := strings.CutPrefix(entry.Message, "http server started on "); ok {
-				address = after
-				return true
-			}
-		}
-		return false
-	}, 5*time.Second, 10*time.Millisecond)
-	return address
-}
-
-func TestServer_LogsTheListenAddress(t *testing.T) {
-	hook := newLogHook(t)
-	address := startServer(t, hook, NewBuilder().APIRegistration(&mockRegister{}).OverrideDefaultMiddleware(true))
-	assert.True(t, strings.HasPrefix(address, "127.0.0.1:"))
-	assert.NotEqual(t, "127.0.0.1:0", address)
-}
-
-func TestServer_HidesTheListenAddress(t *testing.T) {
-	origHidePort := hidePort
-	hidePort = true
-	t.Cleanup(func() {
-		hidePort = origHidePort
-	})
-	hook := newLogHook(t)
-	s, err := NewBuilder().APIRegistration(&mockRegister{}).OverrideDefaultMiddleware(true).build()
-	require.NoError(t, err)
-	s.logListenerAddr(nil)
-	assert.Empty(t, hook.AllEntries())
-}
-
-type blockingRegister struct {
-	started chan struct{}
-	release chan struct{}
-}
-
-func (r *blockingRegister) RegisterRoute(e *echoLib.Echo) {
-	e.GET("/block", func(c *echoLib.Context) error {
-		close(r.started)
-		<-r.release
-		return c.NoContent(http.StatusOK)
-	})
-}
-
-func TestServer_FinalizeReturnsTheShutdownTimeout(t *testing.T) {
-	hook := newLogHook(t)
-	api := &blockingRegister{started: make(chan struct{}), release: make(chan struct{})}
-	builder := NewBuilder().APIRegistration(api).OverrideDefaultMiddleware(true)
-	builder.ListenAddress("127.0.0.1:0")
-	s, err := builder.build()
-	require.NoError(t, err)
-	s.shutdownTimeout = 50 * time.Millisecond
-	require.NoError(t, s.Initialize())
-
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan struct{})
-	var executeErr error
-	go func() {
-		defer close(done)
-		executeErr = s.Execute(ctx, cancel)
-	}()
-	address := waitForListenAddress(t, hook)
-
-	// A request is still running when the server is stopped, so the graceful shutdown reaches its timeout.
-	requestErr := make(chan error, 1)
-	go func() {
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, reqErr := client.Get("http://" + address + "/block")
-		if reqErr == nil {
-			reqErr = resp.Body.Close()
-		}
-		requestErr <- reqErr
-	}()
-	select {
-	case <-api.started:
-	case reqErr := <-requestErr:
-		t.Fatalf("the request ended before reaching the handler: %v", reqErr)
-	case <-time.After(5 * time.Second):
-		t.Fatal("the request didn't reach the handler")
-	}
-	cancel()
-	<-done
-	close(api.release)
-	// The shutdown timeout doesn't interrupt the request still running: it ends normally once released.
-	assert.NoError(t, <-requestErr)
-
-	// The server stopped as requested, but its shutdown failed: the task must report it, like before echo v5.
-	assert.NoError(t, executeErr)
-	err = s.Finalize()
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.ErrorContains(t, err, "server shutdown not properly")
-}
-
-func TestServer_FinalizeWithoutShutdownError(t *testing.T) {
-	hook := newLogHook(t)
-	address := startServer(t, hook, NewBuilder().APIRegistration(&mockRegister{}).OverrideDefaultMiddleware(true))
-	assert.NotEmpty(t, address)
-	// startServer stops the server and checks Finalize returns no error at the end of the test.
-}
 
 func TestLogrusHandler(t *testing.T) {
 	testErr := errors.New("boom")
@@ -239,7 +66,7 @@ func TestLogrusHandler(t *testing.T) {
 			expectedFields: logrus.Fields{logrus.ErrorKey: testErr},
 		},
 		{
-			// logrus would exit or panic with the levels above error.
+			// slog has no level above error: the levels above it are logged as errors.
 			name:           "level above error",
 			log:            func(logger *slog.Logger) { logger.Log(context.Background(), slog.LevelError+4, "message") },
 			expectedLevel:  logrus.ErrorLevel,
@@ -291,6 +118,28 @@ func TestLogrusHandler_Enabled(t *testing.T) {
 	assert.Empty(t, hook.AllEntries())
 }
 
+func TestLogrusHandler_Caller(t *testing.T) {
+	hook := newLogHook(t)
+	logger := slog.New(logrusHandler{})
+
+	// The caller is not set when logrus doesn't report it, as logrus writes it as soon as it is set.
+	logger.Info("message")
+	entry := hook.LastEntry()
+	require.NotNil(t, entry)
+	assert.Nil(t, entry.Caller)
+
+	// When logrus reports the caller, it is the code calling slog, not the handler.
+	origReportCaller := logrus.StandardLogger().ReportCaller
+	logrus.SetReportCaller(true)
+	t.Cleanup(func() {
+		logrus.SetReportCaller(origReportCaller)
+	})
+	logger.Info("message")
+	entry = hook.LastEntry()
+	require.NotNil(t, entry.Caller)
+	assert.Equal(t, "github.com/perses/common/echo.TestLogrusHandler_Caller", entry.Caller.Function)
+}
+
 type doubleWriteRegister struct{}
 
 func (r *doubleWriteRegister) RegisterRoute(e *echoLib.Echo) {
@@ -315,4 +164,114 @@ func TestServer_EchoLogsWithLogrus(t *testing.T) {
 	entry := findLogEntry(hook, "echo: response already written to client")
 	require.NotNil(t, entry)
 	assert.Equal(t, logrus.ErrorLevel, entry.Level)
+}
+
+func TestHTTPServerErrorWriter(t *testing.T) {
+	tests := []struct {
+		name          string
+		line          string
+		expectedLevel logrus.Level
+	}{
+		{
+			name:          "TLS handshake error",
+			line:          "http: TLS handshake error from 127.0.0.1:1234: EOF",
+			expectedLevel: logrus.WarnLevel,
+		},
+		{
+			name:          "HTTP/2 preface sent by the client",
+			line:          `http2: server: error reading preface from client 127.0.0.1:1234: bogus greeting "GET / HTTP/1.1"`,
+			expectedLevel: logrus.WarnLevel,
+		},
+		{
+			name:          "HTTP/2 protocol error of the client",
+			line:          "http2: server connection error from 127.0.0.1:1234: connection error: PROTOCOL_ERROR",
+			expectedLevel: logrus.WarnLevel,
+		},
+		{
+			name:          "panic not recovered by a middleware",
+			line:          "http: panic serving 127.0.0.1:1234: boom\ngoroutine 7 [running]:",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			name:          "HTTP/2 panic not recovered by a middleware",
+			line:          "http2: panic serving 127.0.0.1:1234: boom\ngoroutine 7 [running]:",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			name:          "handler writing the header twice",
+			line:          "http: superfluous response.WriteHeader call from main.handler (main.go:12)",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			name:          "connections not accepted",
+			line:          "http: Accept error: accept tcp 127.0.0.1:8080: accept: too many open files; retrying in 5ms",
+			expectedLevel: logrus.ErrorLevel,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := newLogHook(t)
+			log.New(httpServerErrorWriter{}, "", 0).Print(tt.line)
+			entry := hook.LastEntry()
+			require.NotNil(t, entry)
+			assert.Equal(t, tt.expectedLevel, entry.Level)
+			assert.Equal(t, tt.line, entry.Message)
+		})
+	}
+}
+
+func TestServer_LogListenerAddr(t *testing.T) {
+	tests := []struct {
+		name           string
+		hidePort       bool
+		expectedLogged bool
+	}{
+		{
+			name:           "the address is logged",
+			expectedLogged: true,
+		},
+		{
+			name:     "the address is hidden with --web.hide-port",
+			hidePort: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origHidePort := hidePort
+			hidePort = tt.hidePort
+			t.Cleanup(func() {
+				hidePort = origHidePort
+			})
+			hook := newLogHook(t)
+			address := freeAddress(t)
+			builder := NewBuilder().APIRegistration(&helloRegister{}).OverrideDefaultMiddleware(true)
+			builder.ListenAddress(address)
+			runServer(t, builder)
+
+			// Once the server answers, it has logged that it started (or not).
+			client := &http.Client{Timeout: time.Second}
+			require.Eventually(t, func() bool {
+				resp, err := client.Get("http://" + address + "/hello")
+				if err != nil {
+					return false
+				}
+				_ = resp.Body.Close()
+				return resp.StatusCode == http.StatusOK
+			}, 5*time.Second, 10*time.Millisecond)
+			logged := slices.ContainsFunc(hook.AllEntries(), func(entry *logrus.Entry) bool {
+				return strings.Contains(fmt.Sprint(entry.Message, entry.Data), address)
+			})
+			assert.Equal(t, tt.expectedLogged, logged)
+		})
+	}
+}
+
+// freeAddress returns a local address with a port that is free when the function returns.
+func freeAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+	return address
 }

@@ -60,7 +60,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/pprof"
 	"slices"
@@ -555,17 +554,6 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 	return nil
 }
 
-func (s *server) logListenerAddr(addr net.Addr) {
-	if hidePort {
-		return
-	}
-	scheme := "http"
-	if s.cert != "" {
-		scheme = "https"
-	}
-	logrus.Infof("%s server started on %s", scheme, addr)
-}
-
 // configureHTTPServer sets the timeouts and the error logger of the http.Server created by echo.
 // Every timeout is set, even when it is zero, as echo sets a default ReadTimeout.
 func (s *server) configureHTTPServer(httpServer *http.Server) {
@@ -573,40 +561,8 @@ func (s *server) configureHTTPServer(httpServer *http.Server) {
 	httpServer.ReadTimeout = s.readTimeout
 	httpServer.WriteTimeout = s.writeTimeout
 	httpServer.IdleTimeout = s.idleTimeout
-	// echo logs every error of the server as an error, but the TLS handshake errors are caused by the clients.
+	// echo logs every error of the server as an error, but most of them are caused by the clients (see httpServerErrorWriter).
 	httpServer.ErrorLog = log.New(httpServerErrorWriter{}, "", 0)
-}
-
-var defaultHTTPErrorHandler = echo.DefaultHTTPErrorHandler(false)
-
-// handleError is the central error handler of the server, called with the error returned by the middleware chain.
-// The panics recovered by the middleware Recover and the errors that don't carry an HTTP status (unexpected errors)
-// are logged, as nothing turned them into a response. Then, like the default echo handler, it writes the error as a JSON
-// response without exposing the internal errors.
-func handleError(c *echo.Context, err error) {
-	// The path logged by the access logger is used, as the handlers can rewrite the path of the request.
-	entry := logrus.WithField("method", c.Request().Method).WithField("uri", persesMiddleware.RequestPath(c))
-	// A panic is checked first: its value can carry an HTTP status (like panic(echo.NewHTTPError(...))).
-	if panicErr, ok := errors.AsType[*middleware.PanicStackError](err); ok {
-		entry.WithError(panicErr.Err).WithField("stack", string(panicErr.Stack)).Error("panic recovered while handling the request")
-	} else if echo.StatusCode(err) == 0 {
-		entry.WithError(err).Log(unexpectedErrorLevel(c), "unexpected error while handling the request")
-	}
-	defaultHTTPErrorHandler(c, err)
-}
-
-// unexpectedErrorLevel returns the level of the log of an unexpected error.
-// The error is less severe when the client went away, or when the response is already sent.
-func unexpectedErrorLevel(c *echo.Context) logrus.Level {
-	if errors.Is(c.Request().Context().Err(), context.Canceled) {
-		// The request is canceled when the client closes the connection, so the error is likely caused by this cancellation.
-		return logrus.DebugLevel
-	}
-	if response, _ := echo.UnwrapResponse(c.Response()); response != nil && response.Committed {
-		// The client already received the status of the response, which the error cannot change anymore.
-		return logrus.WarnLevel
-	}
-	return logrus.ErrorLevel
 }
 
 // tlsConfig builds the TLS configuration of the HTTPS server.
@@ -625,14 +581,17 @@ func (s *server) tlsConfig() (*tls.Config, error) {
 	if isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites) {
 		tlsConfig.NextProtos = []string{"h2"}
 	} else {
-		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, required by HTTP/2")
+		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, one of which HTTP/2 requires with TLS 1.2 (RFC 7540, section 9.2.2)")
 	}
 	return tlsConfig, nil
 }
 
 // isHTTP2Compatible tells if HTTP/2 can be offered with the given TLS settings.
-// HTTP/2 requires one of these cipher suites when TLS 1.2 is allowed (RFC 7540, section 9.2.2),
-// otherwise the connections of the clients negotiating HTTP/2 with another cipher suite are rejected.
+// With TLS 1.2, HTTP/2 deployments must support TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (RFC 7540, section 9.2.2), so every
+// HTTP/2 client can negotiate a cipher suite allowed by HTTP/2 (the connections using a cipher suite forbidden by
+// RFC 7540, appendix A, are rejected). net/http checks it only when the TLS configuration is set on the http.Server,
+// not on the listener like here. So, like net/http, HTTP/2 is only offered when TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+// or TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 is configured.
 func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
 	if len(cipherSuites) == 0 || minVersion >= tls.VersionTLS13 {
 		return true
