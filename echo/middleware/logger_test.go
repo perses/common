@@ -14,12 +14,14 @@
 package middleware
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/labstack/echo/v5"
+	echoMiddleware "github.com/labstack/echo/v5/middleware"
 	"github.com/sirupsen/logrus"
 	logrusTest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -41,17 +43,28 @@ func TestLogger(t *testing.T) {
 	hook := logrusTest.NewLocal(logger)
 
 	e := echo.New()
-	e.Use(Logger())
+	// Like the default middlewares, the logger is executed before the middleware Recover, so it logs the panics too.
+	e.Use(Logger(), echoMiddleware.Recover())
 	handler := func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	}
 	e.GET("/api/v1/users", handler)
 	e.GET("/api/v1/projects/:project", handler)
 	e.GET("/metrics", handler)
-	// Like a reverse proxy, this handler modifies the path of the request.
+	// Like a reverse proxy, this handler modifies the path and the method of the request.
 	e.GET("/proxy/*", func(c *echo.Context) error {
 		c.Request().URL.Path = "/rewritten"
+		c.Request().Method = http.MethodPost
 		return c.NoContent(http.StatusOK)
+	})
+	e.GET("/error", func(*echo.Context) error {
+		return errors.New("unexpected failure")
+	})
+	e.GET("/forbidden", func(*echo.Context) error {
+		return echo.ErrForbidden
+	})
+	e.GET("/panic", func(*echo.Context) error {
+		panic("boom")
 	})
 
 	tests := []struct {
@@ -97,11 +110,32 @@ func TestLogger(t *testing.T) {
 			expectedURI:    "/metrics-hidden",
 		},
 		{
-			name:           "the path requested by the client is logged, even if the handler modifies it",
+			name:           "the path and the method requested by the client are logged, even if the handler modifies them",
 			target:         "/proxy/api/v1/query",
 			expectedStatus: http.StatusOK,
 			expectedLevel:  logrus.InfoLevel,
 			expectedURI:    "/proxy/api/v1/query",
+		},
+		{
+			name:           "the status of an unexpected error is the one sent by the error handler",
+			target:         "/error",
+			expectedStatus: http.StatusInternalServerError,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/error",
+		},
+		{
+			name:           "the status of an HTTP error is the one carried by the error",
+			target:         "/forbidden",
+			expectedStatus: http.StatusForbidden,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/forbidden",
+		},
+		{
+			name:           "a panic is logged",
+			target:         "/panic",
+			expectedStatus: http.StatusInternalServerError,
+			expectedLevel:  logrus.InfoLevel,
+			expectedURI:    "/panic",
 		},
 		{
 			name:           "the control characters are escaped",
@@ -122,29 +156,35 @@ func TestLogger(t *testing.T) {
 			require.NotNil(t, entry)
 			assert.Equal(t, tt.expectedLevel, entry.Level)
 			assert.Equal(t, tt.expectedURI, entry.Data["uri"])
+			assert.Equal(t, http.MethodGet, entry.Data["method"])
+			assert.Equal(t, tt.expectedStatus, entry.Data["status"])
 		})
 	}
 }
 
-func TestRequestPath(t *testing.T) {
+func TestRequestMethodAndPath(t *testing.T) {
 	tests := []struct {
-		name         string
-		middleware   []echo.MiddlewareFunc
-		expectedPath string
+		name           string
+		middleware     []echo.MiddlewareFunc
+		expectedMethod string
+		expectedPath   string
 	}{
 		{
-			name:         "the path logged by the logger is returned, even if the handler modifies it",
-			middleware:   []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{})},
-			expectedPath: "/proxy/api%2Fv1",
+			name:           "the method and the path logged by the logger are returned, even if the handler modifies them",
+			middleware:     []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{})},
+			expectedMethod: http.MethodGet,
+			expectedPath:   "/proxy/api%2Fv1",
 		},
 		{
-			name:         "the current path is returned when the logger doesn't handle the request",
-			middleware:   []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{Skipper: func(*echo.Context) bool { return true }})},
-			expectedPath: "/rewritten",
+			name:           "the current method and path are returned when the logger doesn't handle the request",
+			middleware:     []echo.MiddlewareFunc{LoggerWithConfig(LoggerConfig{Skipper: func(*echo.Context) bool { return true }})},
+			expectedMethod: http.MethodPost,
+			expectedPath:   "/rewritten",
 		},
 		{
-			name:         "the current path is returned without the logger",
-			expectedPath: "/rewritten",
+			name:           "the current method and path are returned without the logger",
+			expectedMethod: http.MethodPost,
+			expectedPath:   "/rewritten",
 		},
 	}
 	origOutput := logrus.StandardLogger().Out
@@ -154,18 +194,21 @@ func TestRequestPath(t *testing.T) {
 	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var path string
+			var method, path string
 			e := echo.New()
 			e.Use(tt.middleware...)
-			// Like a reverse proxy, this handler modifies the path of the request.
+			// Like a reverse proxy, this handler modifies the path and the method of the request.
 			e.GET("/proxy/*", func(c *echo.Context) error {
 				c.Request().URL.Path = "/rewritten"
+				c.Request().Method = http.MethodPost
+				method = RequestMethod(c)
 				path = RequestPath(c)
 				return c.NoContent(http.StatusOK)
 			})
 			rec := httptest.NewRecorder()
 			e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/proxy/api%2Fv1", nil))
 			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.expectedMethod, method)
 			assert.Equal(t, tt.expectedPath, path)
 		})
 	}

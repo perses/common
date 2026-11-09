@@ -22,8 +22,10 @@ import (
 	"regexp"
 	"strconv"
 	"testing"
+	"time"
 
 	echoLib "github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
@@ -101,6 +103,10 @@ func (r *errorRegister) RegisterRoute(e *echoLib.Echo) {
 		c.Request().URL.Path = "/rewritten"
 		return errors.New("unexpected failure")
 	})
+	e.GET("/rewrite-method-then-fail", func(c *echoLib.Context) error {
+		c.Request().Method = http.MethodPost
+		return errors.New("unexpected failure")
+	})
 	e.GET("/unexpected", func(_ *echoLib.Context) error {
 		return errors.New("unexpected failure")
 	})
@@ -113,6 +119,13 @@ func (r *errorRegister) RegisterRoute(e *echoLib.Echo) {
 	// Like a handler calling a datasource, the error is caused by the cancellation of the request when the client went away.
 	e.GET("/canceled", func(c *echoLib.Context) error {
 		return c.Request().Context().Err()
+	})
+	// Like a handler aborting its own work, the handler cancels the context of the request, while the client is still there.
+	e.GET("/canceled-by-the-server", func(c *echoLib.Context) error {
+		ctx, cancel := context.WithCancel(c.Request().Context())
+		c.SetRequest(c.Request().WithContext(ctx))
+		cancel()
+		return ctx.Err()
 	})
 	e.GET("/unauthorized", func(_ *echoLib.Context) error {
 		return echoLib.NewHTTPError(http.StatusUnauthorized, "missing token")
@@ -131,7 +144,9 @@ func TestServer_ErrorHandling(t *testing.T) {
 		path  string
 		route string
 		// canceled cancels the request before it is handled, like when the client went away.
-		canceled     bool
+		canceled bool
+		// middlewares are added after the default ones.
+		middlewares  []echoLib.MiddlewareFunc
 		expectedCode int
 		expectedBody string
 		// expectedError is the message of the error logged (if any) with the level expectedLevel.
@@ -182,9 +197,51 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedLevel: logrus.ErrorLevel,
 		},
 		{
+			// Like a proxy, the handler rewrites the method: the logs and the metrics use the method received.
+			name:          "unexpected error after the method is rewritten",
+			path:          "/rewrite-method-then-fail",
+			route:         "/rewrite-method-then-fail",
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
 			name:          "unexpected error",
 			path:          "/unexpected",
 			route:         "/unexpected",
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			// The middleware ContextTimeout cancels its own context once the request is handled: the client didn't go away.
+			name:          "unexpected error with a middleware canceling its context",
+			path:          "/unexpected",
+			route:         "/unexpected",
+			middlewares:   []echoLib.MiddlewareFunc{middleware.ContextTimeout(time.Minute)},
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			// The error is caused by a cancellation, but the client didn't go away: the server canceled its own context.
+			name:          "cancellation by the server",
+			path:          "/canceled-by-the-server",
+			route:         "/canceled-by-the-server",
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			// The client went away, but the error is not caused by the cancellation of the request.
+			name:          "unexpected error not caused by the client that went away",
+			path:          "/unexpected",
+			route:         "/unexpected",
+			canceled:      true,
 			expectedCode:  http.StatusInternalServerError,
 			expectedBody:  `{"message":"Internal Server Error"}`,
 			expectedError: "unexpected error while handling the request",
@@ -236,11 +293,14 @@ func TestServer_ErrorHandling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			hook := newLogHook(t)
 			registry := prometheus.NewRegistry()
-			handler, err := NewBuilder().
+			builder := NewBuilder().
 				APIRegistration(&errorRegister{}).
 				MetricNamespace("test").
-				PrometheusRegisterer(registry).
-				BuildHandler()
+				PrometheusRegisterer(registry)
+			for _, mdw := range tt.middlewares {
+				builder.Middleware(mdw)
+			}
+			handler, err := builder.BuildHandler()
 			require.NoError(t, err)
 
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
@@ -264,6 +324,7 @@ func TestServer_ErrorHandling(t *testing.T) {
 			}
 			require.NotNil(t, accessLog)
 			assert.Equal(t, tt.expectedCode, accessLog.Data["status"])
+			assert.Equal(t, http.MethodGet, accessLog.Data["method"])
 			labels := map[string]string{"code": strconv.Itoa(tt.expectedCode), "method": http.MethodGet}
 			if tt.route != "" {
 				labels["handler"] = tt.route

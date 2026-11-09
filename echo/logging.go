@@ -33,6 +33,15 @@ type logrusHandler struct {
 	fields logrus.Fields
 	// groupPrefix prefixes the keys of the next attributes. It is built from the groups added by WithGroup.
 	groupPrefix string
+	// reportCaller tells if logrus reports the caller (see newLogrusHandler).
+	reportCaller bool
+}
+
+// newLogrusHandler returns a logrusHandler for the current configuration of logrus.
+// logrus has no way to read if it reports the caller without racing with SetReportCaller, so this setting is read once,
+// here: logrus must be configured before (like app.Runner does).
+func newLogrusHandler() logrusHandler {
+	return logrusHandler{reportCaller: logrus.StandardLogger().ReportCaller}
 }
 
 func (h logrusHandler) Enabled(_ context.Context, level slog.Level) bool {
@@ -46,11 +55,12 @@ func (h logrusHandler) Handle(ctx context.Context, record slog.Record) error {
 		addField(fields, h.groupPrefix, attr)
 		return true
 	})
+	// The entry is built directly, as WithContext, WithTime and WithFields would copy it each time.
 	// logrus uses the current time when the time of the record is zero.
-	entry := logrus.WithContext(ctx).WithTime(record.Time).WithFields(fields)
+	entry := &logrus.Entry{Logger: logrus.StandardLogger(), Data: fields, Time: record.Time, Context: ctx}
 	// When logrus reports the caller, it would report this method, so the caller of slog is given instead.
 	// It is only set in this case, as logrus writes the caller as soon as it is set.
-	if record.PC != 0 && logrus.StandardLogger().ReportCaller {
+	if h.reportCaller && record.PC != 0 {
 		frame, _ := runtime.CallersFrames([]uintptr{record.PC}).Next()
 		entry.Caller = &frame
 	}
@@ -64,14 +74,17 @@ func (h logrusHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for _, attr := range attrs {
 		addField(fields, h.groupPrefix, attr)
 	}
-	return logrusHandler{fields: fields, groupPrefix: h.groupPrefix}
+	// h is a copy: the receiver is not modified, and the other settings are kept.
+	h.fields = fields
+	return h
 }
 
 func (h logrusHandler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
 	}
-	return logrusHandler{fields: h.fields, groupPrefix: h.groupPrefix + name + "."}
+	h.groupPrefix += name + "."
+	return h
 }
 
 // addField adds the attribute to the fields. The attributes of a group are added one by one, prefixed by the name of the group.
@@ -114,7 +127,15 @@ func logrusLevel(level slog.Level) logrus.Level {
 // httpServerErrorWriter writes with logrus every line logged by the http.Server.
 // Most of these errors are caused by the clients (like the TLS handshake errors, or the HTTP/2 protocol errors), so they are
 // logged as warnings, as any client can trigger them. Only the defects of the server (see httpServerDefects) are logged as errors.
-type httpServerErrorWriter struct{}
+type httpServerErrorWriter struct {
+	// reportCaller tells if logrus reports the caller (see newLogrusHandler).
+	reportCaller bool
+}
+
+// newHTTPServerErrorWriter returns an httpServerErrorWriter for the current configuration of logrus (see newLogrusHandler).
+func newHTTPServerErrorWriter() httpServerErrorWriter {
+	return httpServerErrorWriter{reportCaller: logrus.StandardLogger().ReportCaller}
+}
 
 // httpServerDefects are the beginnings of the errors logged by the http.Server (net/http and its HTTP/2 server)
 // that are caused by the server itself: a handler, or the system.
@@ -131,14 +152,39 @@ var httpServerDefects = []string{
 	"http: error reading directory",
 }
 
-func (httpServerErrorWriter) Write(p []byte) (int, error) {
+func (w httpServerErrorWriter) Write(p []byte) (int, error) {
 	message := strings.TrimSuffix(string(p), "\n")
 	level := logrus.WarnLevel
 	if slices.ContainsFunc(httpServerDefects, func(prefix string) bool { return strings.HasPrefix(message, prefix) }) {
 		level = logrus.ErrorLevel
 	}
-	logrus.StandardLogger().Log(level, message)
+	entry := logrus.NewEntry(logrus.StandardLogger())
+	// When logrus reports the caller, it would report this method, so the code of net/http that logged is given instead.
+	if w.reportCaller {
+		entry.Caller = httpServerLogCaller()
+	}
+	entry.Log(level, message)
 	return len(p), nil
+}
+
+// httpServerLogCaller returns the code that logged with the error logger of the http.Server.
+// It skips this writer, the package log, and the logging functions of net/http (like Server.logf, used by the code logging).
+func httpServerLogCaller() *runtime.Frame {
+	var pcs [16]uintptr
+	// runtime.Callers, httpServerLogCaller and httpServerErrorWriter.Write are skipped.
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs[:])])
+	for {
+		frame, more := frames.Next()
+		isLogging := strings.HasPrefix(frame.Function, "log.") ||
+			(strings.HasPrefix(frame.Function, "net/http") && strings.HasSuffix(frame.Function, "logf"))
+		if frame.Function != "" && !isLogging {
+			return &frame
+		}
+		if !more {
+			// logrus reports its own caller when none is given.
+			return nil
+		}
+	}
 }
 
 // logListenerAddr logs the address listened by the server, unless it is hidden with the flag --web.hide-port.

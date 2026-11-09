@@ -412,7 +412,7 @@ func (b *Builder) build() (*server, error) {
 
 	e := echo.NewWithConfig(echo.Config{
 		// echo logs with log/slog: its logs are written with logrus, like the other logs.
-		Logger:           slog.New(logrusHandler{}),
+		Logger:           slog.New(newLogrusHandler()),
 		HTTPErrorHandler: handleError,
 		IPExtractor:      b.ipExtractor,
 		SchemeExtractor:  b.schemeExtractor,
@@ -496,6 +496,8 @@ func (s *server) String() string {
 }
 
 func (s *server) Initialize() error {
+	// The context of the request is saved before any middleware can replace it (see saveRequestContext).
+	s.e.Pre(saveRequestContext)
 	// init global middleware
 	// Remove trailing slash middleware a trailing slash from the request URI
 	s.e.Pre(middleware.RemoveTrailingSlash())
@@ -562,7 +564,7 @@ func (s *server) configureHTTPServer(httpServer *http.Server) {
 	httpServer.WriteTimeout = s.writeTimeout
 	httpServer.IdleTimeout = s.idleTimeout
 	// echo logs every error of the server as an error, but most of them are caused by the clients (see httpServerErrorWriter).
-	httpServer.ErrorLog = log.New(httpServerErrorWriter{}, "", 0)
+	httpServer.ErrorLog = log.New(newHTTPServerErrorWriter(), "", 0)
 }
 
 // tlsConfig builds the TLS configuration of the HTTPS server.

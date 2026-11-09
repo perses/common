@@ -120,24 +120,28 @@ func TestLogrusHandler_Enabled(t *testing.T) {
 
 func TestLogrusHandler_Caller(t *testing.T) {
 	hook := newLogHook(t)
-	logger := slog.New(logrusHandler{})
-
 	// The caller is not set when logrus doesn't report it, as logrus writes it as soon as it is set.
-	logger.Info("message")
+	slog.New(newLogrusHandler()).Info("message")
 	entry := hook.LastEntry()
 	require.NotNil(t, entry)
 	assert.Nil(t, entry.Caller)
 
 	// When logrus reports the caller, it is the code calling slog, not the handler.
-	origReportCaller := logrus.StandardLogger().ReportCaller
-	logrus.SetReportCaller(true)
-	t.Cleanup(func() {
-		logrus.SetReportCaller(origReportCaller)
-	})
-	logger.Info("message")
+	setReportCaller(t, true)
+	slog.New(newLogrusHandler()).With("key", "value").WithGroup("group").Info("message")
 	entry = hook.LastEntry()
 	require.NotNil(t, entry.Caller)
 	assert.Equal(t, "github.com/perses/common/echo.TestLogrusHandler_Caller", entry.Caller.Function)
+}
+
+// setReportCaller sets if logrus reports the caller until the end of the test.
+func setReportCaller(t *testing.T, reportCaller bool) {
+	t.Helper()
+	origReportCaller := logrus.StandardLogger().ReportCaller
+	logrus.SetReportCaller(reportCaller)
+	t.Cleanup(func() {
+		logrus.SetReportCaller(origReportCaller)
+	})
 }
 
 type doubleWriteRegister struct{}
@@ -218,6 +222,39 @@ func TestHTTPServerErrorWriter(t *testing.T) {
 			assert.Equal(t, tt.line, entry.Message)
 		})
 	}
+}
+
+func TestHTTPServerErrorWriter_Caller(t *testing.T) {
+	hook := newLogHook(t)
+	// The caller is not set when logrus doesn't report it, as logrus writes it as soon as it is set.
+	log.New(newHTTPServerErrorWriter(), "", 0).Print("http: TLS handshake error from 127.0.0.1:1234: EOF")
+	entry := hook.LastEntry()
+	require.NotNil(t, entry)
+	assert.Nil(t, entry.Caller)
+
+	// When logrus reports the caller, it is the code of net/http that logged the error, not the writer or the package log.
+	setReportCaller(t, true)
+	server := httptest.NewUnstartedServer(http.NotFoundHandler())
+	server.Config.ErrorLog = log.New(newHTTPServerErrorWriter(), "", 0)
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	hook.Reset()
+	// A client sending HTTP to the HTTPS server makes it log a TLS handshake error.
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	_, err = conn.Write([]byte("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return hook.LastEntry() != nil
+	}, 5*time.Second, 10*time.Millisecond)
+	entry = hook.LastEntry()
+	assert.Equal(t, logrus.WarnLevel, entry.Level)
+	assert.Contains(t, entry.Message, "http: TLS handshake error")
+	require.NotNil(t, entry.Caller)
+	assert.Equal(t, "net/http.(*conn).serve", entry.Caller.Function)
 }
 
 func TestServer_LogListenerAddr(t *testing.T) {

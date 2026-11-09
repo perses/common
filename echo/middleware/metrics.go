@@ -72,9 +72,10 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 func (m *Metrics) ProcessHTTPRequest(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(ctx *echo.Context) error {
 		start := time.Now()
+		// The method is read before calling the next handler, as it can modify it (like a reverse proxy).
+		method := ctx.Request().Method
 		err := next(ctx)
 		elapsedTime := time.Since(start).Seconds()
-		method := ctx.Request().Method
 		if method != http.MethodPost &&
 			method != http.MethodGet &&
 			method != http.MethodHead &&
