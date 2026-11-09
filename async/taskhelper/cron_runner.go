@@ -78,6 +78,16 @@ func (r *cronRunner) cron(ctx context.Context, cancelFunc context.CancelFunc) {
 	now := time.Now()
 	next := r.schedule.Next(now)
 	for {
+		// Next returns the zero time when no date matches within five years.
+		// This can happen after a firing even though NewCron rejected schedules
+		// that never match at creation time (e.g. a leap-day schedule whose next
+		// match is more than five years away because 2100 is not a leap year).
+		// Arming a timer with a negative duration would execute the task in a
+		// busy loop, so stop the runner instead.
+		if next.IsZero() {
+			logrus.Errorf("task %s has no next execution date for its cron schedule, stopping the runner", simpleTask.String())
+			return
+		}
 		// After an execution, next is computed from the moment it started, so the timer is armed with the time left until this date.
 		// That way, the time spent executing the task doesn't delay the next execution.
 		// If the execution took longer than that, the next date has already passed, and the task is executed again right away.
