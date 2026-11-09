@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 )
@@ -66,15 +66,16 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 
 // ProcessHTTPRequest is an echo middleware. It will intercept all responses.
 // It will increase the metrics that count the number of HTTP request and calculate the time took to respond.
+// It must be executed before the middleware Recover, so the panics are counted too.
+// The error returned by the next handler is returned as is, to be handled by the central error handler of echo.
+// The status code counted is the one of the response that will be sent, resolved from this error.
 func (m *Metrics) ProcessHTTPRequest(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(ctx echo.Context) error {
+	return func(ctx *echo.Context) error {
 		start := time.Now()
-		if err := next(ctx); err != nil {
-			// Note: if this method is called, the code won't go further.
-			ctx.Error(err)
-		}
-		elapsedTime := time.Since(start).Seconds()
+		// The method is read before calling the next handler, as it can modify it (like a reverse proxy).
 		method := ctx.Request().Method
+		err := next(ctx)
+		elapsedTime := time.Since(start).Seconds()
 		if method != http.MethodPost &&
 			method != http.MethodGet &&
 			method != http.MethodHead &&
@@ -88,21 +89,22 @@ func (m *Metrics) ProcessHTTPRequest(next echo.HandlerFunc) echo.HandlerFunc {
 			method = "not_standard"
 		}
 
-		status := strconv.Itoa(ctx.Response().Status)
-		counter, err := m.totalHTTPRequest.GetMetricWith(prometheus.Labels{labelCode: status, labelHandler: ctx.Path(), labelMethod: method})
-		if err != nil {
-			logrus.WithError(err).Error("unable to get the counter metrics in the api monitoring")
+		_, code := echo.ResolveResponseStatus(ctx.Response(), err)
+		status := strconv.Itoa(code)
+		counter, metricErr := m.totalHTTPRequest.GetMetricWith(prometheus.Labels{labelCode: status, labelHandler: ctx.Path(), labelMethod: method})
+		if metricErr != nil {
+			logrus.WithError(metricErr).Error("unable to get the counter metrics in the api monitoring")
 			// maybe not a really smart choice, but for the moment let's not impact the business if the monitoring somehow failed (which will unlikely happen)
-			return nil
+			return err
 		}
 		counter.Inc()
-		sum, err := m.durationHTTPRequest.GetMetricWith(prometheus.Labels{labelHandler: ctx.Path(), labelMethod: method})
-		if err != nil {
-			logrus.WithError(err).Error("unable to get the summary metrics in the api monitoring")
+		sum, metricErr := m.durationHTTPRequest.GetMetricWith(prometheus.Labels{labelHandler: ctx.Path(), labelMethod: method})
+		if metricErr != nil {
+			logrus.WithError(metricErr).Error("unable to get the summary metrics in the api monitoring")
 			// maybe not a really smart choice, but for the moment let's not impact the business if the monitoring somehow failed (which will unlikely happen)
-			return nil
+			return err
 		}
 		sum.Observe(elapsedTime)
-		return nil
+		return err
 	}
 }
