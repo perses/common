@@ -69,6 +69,7 @@ func NewTick(task any, interval time.Duration) (Helper, error) {
 
 // NewCron is returning a Helper that will execute the task according to the schedule.
 // If an execution of the task fails, the error is logged, and the task is executed again at the next schedule.
+// It returns an error if cronSchedule is invalid, or if it never matches any date (like "0 0 31 2 *").
 // cronSchedule is following the standard syntax described here: https://en.wikipedia.org/wiki/Cron.
 // It also supports the predefined scheduling definitions:
 // - @yearly (or @annually) | Run once a year, midnight, Jan. 1st        | 0 0 0 1 1 *
@@ -82,6 +83,10 @@ func NewCron(task any, cronSchedule string) (Helper, error) {
 	sch, err := cron.ParseStandard(cronSchedule)
 	if err != nil {
 		return nil, err
+	}
+	// Next returns the zero time when it doesn't find any date. The task would be executed in a loop without any delay, as this date is in the past.
+	if sch.Next(time.Now()).IsZero() {
+		return nil, fmt.Errorf("the cron schedule %q never matches any date", cronSchedule)
 	}
 	isSimpleTask, err := isSimpleTask(task)
 	if err != nil {
