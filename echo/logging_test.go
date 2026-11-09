@@ -15,7 +15,10 @@ package echo
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -43,13 +46,33 @@ func TestServer_ConfigureHTTPServer(t *testing.T) {
 	assert.Equal(t, time.Duration(0), httpServer.WriteTimeout)
 	assert.Equal(t, defaultIdleTimeout, httpServer.IdleTimeout)
 
-	// The errors of the server are logged with logrus.
+	// The errors of the server are logged with logrus. The TLS handshake errors are caused by the clients, so they are warnings.
 	require.NotNil(t, httpServer.ErrorLog)
-	httpServer.ErrorLog.Printf("http: TLS handshake error from %s: EOF", "127.0.0.1:1234")
-	entry := hook.LastEntry()
-	require.NotNil(t, entry)
-	assert.Equal(t, logrus.ErrorLevel, entry.Level)
-	assert.Equal(t, "http: TLS handshake error from 127.0.0.1:1234: EOF", entry.Message)
+	tests := []struct {
+		name          string
+		line          string
+		expectedLevel logrus.Level
+	}{
+		{
+			name:          "TLS handshake error",
+			line:          "http: TLS handshake error from 127.0.0.1:1234: EOF",
+			expectedLevel: logrus.WarnLevel,
+		},
+		{
+			name:          "panic not recovered by a middleware",
+			line:          "http: panic serving 127.0.0.1:1234: boom",
+			expectedLevel: logrus.ErrorLevel,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			httpServer.ErrorLog.Print(tt.line)
+			entry := hook.LastEntry()
+			require.NotNil(t, entry)
+			assert.Equal(t, tt.expectedLevel, entry.Level)
+			assert.Equal(t, tt.line, entry.Message)
+		})
+	}
 }
 
 // startServer starts the server built by the builder on a random port and returns its address, read from the logs.
@@ -61,16 +84,18 @@ func startServer(t *testing.T, hook *logrustest.Hook, builder *Builder) string {
 	require.NoError(t, err)
 	require.NoError(t, task.Initialize())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
+	var executeErr error
 	go func() {
 		defer close(done)
-		_ = task.Execute(ctx, cancel)
+		executeErr = task.Execute(ctx, cancel)
 	}()
 	t.Cleanup(func() {
 		cancel()
 		<-done
-		require.NoError(t, task.Finalize())
+		assert.NoError(t, executeErr)
+		assert.NoError(t, task.Finalize())
 	})
 	return waitForListenAddress(t, hook)
 }
@@ -129,38 +154,47 @@ func TestServer_FinalizeReturnsTheShutdownTimeout(t *testing.T) {
 	api := &blockingRegister{started: make(chan struct{}), release: make(chan struct{})}
 	builder := NewBuilder().APIRegistration(api).OverrideDefaultMiddleware(true)
 	builder.ListenAddress("127.0.0.1:0")
-	task, err := builder.Build()
+	s, err := builder.build()
 	require.NoError(t, err)
-	task.(*server).shutdownTimeout = 50 * time.Millisecond
-	require.NoError(t, task.Initialize())
+	s.shutdownTimeout = 50 * time.Millisecond
+	require.NoError(t, s.Initialize())
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	done := make(chan struct{})
 	var executeErr error
 	go func() {
 		defer close(done)
-		executeErr = task.Execute(ctx, cancel)
+		executeErr = s.Execute(ctx, cancel)
 	}()
 	address := waitForListenAddress(t, hook)
 
 	// A request is still running when the server is stopped, so the graceful shutdown reaches its timeout.
-	requestDone := make(chan struct{})
+	requestErr := make(chan error, 1)
 	go func() {
-		defer close(requestDone)
-		resp, reqErr := http.Get("http://" + address + "/block")
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, reqErr := client.Get("http://" + address + "/block")
 		if reqErr == nil {
-			_ = resp.Body.Close()
+			reqErr = resp.Body.Close()
 		}
+		requestErr <- reqErr
 	}()
-	<-api.started
+	select {
+	case <-api.started:
+	case reqErr := <-requestErr:
+		t.Fatalf("the request ended before reaching the handler: %v", reqErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request didn't reach the handler")
+	}
 	cancel()
 	<-done
 	close(api.release)
-	<-requestDone
+	// The shutdown timeout doesn't interrupt the request still running: it ends normally once released.
+	assert.NoError(t, <-requestErr)
 
 	// The server stopped as requested, but its shutdown failed: the task must report it, like before echo v5.
 	assert.NoError(t, executeErr)
-	err = task.Finalize()
+	err = s.Finalize()
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.ErrorContains(t, err, "server shutdown not properly")
 }
@@ -170,4 +204,115 @@ func TestServer_FinalizeWithoutShutdownError(t *testing.T) {
 	address := startServer(t, hook, NewBuilder().APIRegistration(&mockRegister{}).OverrideDefaultMiddleware(true))
 	assert.NotEmpty(t, address)
 	// startServer stops the server and checks Finalize returns no error at the end of the test.
+}
+
+func TestLogrusHandler(t *testing.T) {
+	testErr := errors.New("boom")
+	tests := []struct {
+		name           string
+		log            func(logger *slog.Logger)
+		expectedLevel  logrus.Level
+		expectedFields logrus.Fields
+	}{
+		{
+			name:           "debug",
+			log:            func(logger *slog.Logger) { logger.Debug("message") },
+			expectedLevel:  logrus.DebugLevel,
+			expectedFields: logrus.Fields{},
+		},
+		{
+			name:           "info with attributes",
+			log:            func(logger *slog.Logger) { logger.Info("message", "address", "127.0.0.1:8080", "count", 2) },
+			expectedLevel:  logrus.InfoLevel,
+			expectedFields: logrus.Fields{"address": "127.0.0.1:8080", "count": int64(2)},
+		},
+		{
+			name:           "warning",
+			log:            func(logger *slog.Logger) { logger.Warn("message") },
+			expectedLevel:  logrus.WarnLevel,
+			expectedFields: logrus.Fields{},
+		},
+		{
+			name:           "error with the error as attribute",
+			log:            func(logger *slog.Logger) { logger.Error("message", "error", testErr) },
+			expectedLevel:  logrus.ErrorLevel,
+			expectedFields: logrus.Fields{logrus.ErrorKey: testErr},
+		},
+		{
+			// logrus would exit or panic with the levels above error.
+			name:           "level above error",
+			log:            func(logger *slog.Logger) { logger.Log(context.Background(), slog.LevelError+4, "message") },
+			expectedLevel:  logrus.ErrorLevel,
+			expectedFields: logrus.Fields{},
+		},
+		{
+			name: "attributes and groups added to the logger",
+			log: func(logger *slog.Logger) {
+				logger.With("component", "echo").WithGroup("request").With("method", http.MethodGet).
+					Info("message", "status", http.StatusOK, slog.Group("user", "name", "admin"))
+			},
+			expectedLevel: logrus.InfoLevel,
+			expectedFields: logrus.Fields{
+				"component":         "echo",
+				"request.method":    http.MethodGet,
+				"request.status":    int64(http.StatusOK),
+				"request.user.name": "admin",
+			},
+		},
+		{
+			name: "empty attributes are ignored, and the attributes of a group without key are inlined",
+			log: func(logger *slog.Logger) {
+				logger.WithGroup("").Info("message", slog.Attr{}, slog.Group("", "inlined", true), slog.Group("empty"))
+			},
+			expectedLevel:  logrus.InfoLevel,
+			expectedFields: logrus.Fields{"inlined": true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := newLogHook(t)
+			tt.log(slog.New(logrusHandler{}))
+			require.Len(t, hook.AllEntries(), 1)
+			entry := hook.LastEntry()
+			assert.Equal(t, "message", entry.Message)
+			assert.Equal(t, tt.expectedLevel, entry.Level)
+			assert.Equal(t, tt.expectedFields, entry.Data)
+		})
+	}
+}
+
+func TestLogrusHandler_Enabled(t *testing.T) {
+	hook := newLogHook(t)
+	logrus.SetLevel(logrus.WarnLevel)
+	logger := slog.New(logrusHandler{})
+	assert.False(t, logger.Enabled(context.Background(), slog.LevelInfo))
+	assert.True(t, logger.Enabled(context.Background(), slog.LevelWarn))
+	logger.Info("message")
+	assert.Empty(t, hook.AllEntries())
+}
+
+type doubleWriteRegister struct{}
+
+func (r *doubleWriteRegister) RegisterRoute(e *echoLib.Echo) {
+	e.GET("/double-write", func(c *echoLib.Context) error {
+		if err := c.NoContent(http.StatusOK); err != nil {
+			return err
+		}
+		return c.NoContent(http.StatusAccepted)
+	})
+}
+
+func TestServer_EchoLogsWithLogrus(t *testing.T) {
+	hook := newLogHook(t)
+	handler, err := NewBuilder().APIRegistration(&doubleWriteRegister{}).OverrideDefaultMiddleware(true).BuildHandler()
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/double-write", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// echo logs with log/slog that the response was already written: the log is written with logrus.
+	entry := findLogEntry(hook, "echo: response already written to client")
+	require.NotNil(t, entry)
+	assert.Equal(t, logrus.ErrorLevel, entry.Level)
 }

@@ -14,9 +14,12 @@
 package echo
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -28,14 +31,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newLogHook captures the logs of the standard logrus logger until the end of the test.
+// newLogHook captures the logs of the standard logrus logger, at every level, until the end of the test.
+// The logs are not written to the output during the test.
 func newLogHook(t *testing.T) *logrustest.Hook {
 	t.Helper()
-	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	logger := logrus.StandardLogger()
+	origHooks := logger.ReplaceHooks(make(logrus.LevelHooks))
+	origLevel := logger.GetLevel()
+	origOutput := logger.Out
+	logger.SetLevel(logrus.TraceLevel)
+	logger.SetOutput(io.Discard)
 	t.Cleanup(func() {
-		logrus.StandardLogger().ReplaceHooks(origHooks)
+		logger.ReplaceHooks(origHooks)
+		logger.SetLevel(origLevel)
+		logger.SetOutput(origOutput)
 	})
-	return logrustest.NewLocal(logrus.StandardLogger())
+	return logrustest.NewLocal(logger)
 }
 
 // findLogEntry returns the first entry captured by the hook with the given message.
@@ -93,6 +104,16 @@ func (r *errorRegister) RegisterRoute(e *echoLib.Echo) {
 	e.GET("/unexpected", func(_ *echoLib.Context) error {
 		return errors.New("unexpected failure")
 	})
+	e.GET("/fail-after-response", func(c *echoLib.Context) error {
+		if err := c.JSON(http.StatusOK, map[string]string{"message": "partial"}); err != nil {
+			return err
+		}
+		return errors.New("unexpected failure")
+	})
+	// Like a handler calling a datasource, the error is caused by the cancellation of the request when the client went away.
+	e.GET("/canceled", func(c *echoLib.Context) error {
+		return c.Request().Context().Err()
+	})
 	e.GET("/unauthorized", func(_ *echoLib.Context) error {
 		return echoLib.NewHTTPError(http.StatusUnauthorized, "missing token")
 	})
@@ -101,14 +122,21 @@ func (r *errorRegister) RegisterRoute(e *echoLib.Echo) {
 	})
 }
 
+// goroutineHeader matches the first line of the stack of a goroutine (like "goroutine 7 [running]:").
+var goroutineHeader = regexp.MustCompile(`(?m)^goroutine \d+ \[`)
+
 func TestServer_ErrorHandling(t *testing.T) {
 	tests := []struct {
-		name          string
-		path          string
-		route         string
-		expectedCode  int
-		expectedBody  string
+		name  string
+		path  string
+		route string
+		// canceled cancels the request before it is handled, like when the client went away.
+		canceled     bool
+		expectedCode int
+		expectedBody string
+		// expectedError is the message of the error logged (if any) with the level expectedLevel.
 		expectedError string
+		expectedLevel logrus.Level
 		// expectedPanic is the error of the panic logged with its stack trace.
 		expectedPanic string
 	}{
@@ -119,6 +147,7 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedCode:  http.StatusInternalServerError,
 			expectedBody:  `{"message":"Internal Server Error"}`,
 			expectedError: "panic recovered while handling the request",
+			expectedLevel: logrus.ErrorLevel,
 			expectedPanic: "boom",
 		},
 		{
@@ -129,6 +158,7 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedCode:  http.StatusServiceUnavailable,
 			expectedBody:  `{"message":"maintenance"}`,
 			expectedError: "panic recovered while handling the request",
+			expectedLevel: logrus.ErrorLevel,
 			expectedPanic: echoLib.NewHTTPError(http.StatusServiceUnavailable, "maintenance").Error(),
 		},
 		{
@@ -139,6 +169,7 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedCode:  http.StatusInternalServerError,
 			expectedBody:  `{"message":"Internal Server Error"}`,
 			expectedError: "panic recovered while handling the request",
+			expectedLevel: logrus.ErrorLevel,
 			expectedPanic: "boom",
 		},
 		{
@@ -148,6 +179,7 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedCode:  http.StatusInternalServerError,
 			expectedBody:  `{"message":"Internal Server Error"}`,
 			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.ErrorLevel,
 		},
 		{
 			name:          "unexpected error",
@@ -156,6 +188,28 @@ func TestServer_ErrorHandling(t *testing.T) {
 			expectedCode:  http.StatusInternalServerError,
 			expectedBody:  `{"message":"Internal Server Error"}`,
 			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.ErrorLevel,
+		},
+		{
+			// The client already received the status of the response, which the error cannot change.
+			name:          "unexpected error after the response is sent",
+			path:          "/fail-after-response",
+			route:         "/fail-after-response",
+			expectedCode:  http.StatusOK,
+			expectedBody:  `{"message":"partial"}`,
+			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.WarnLevel,
+		},
+		{
+			// The error is caused by the client that went away.
+			name:          "unexpected error after the client went away",
+			path:          "/canceled",
+			route:         "/canceled",
+			canceled:      true,
+			expectedCode:  http.StatusInternalServerError,
+			expectedBody:  `{"message":"Internal Server Error"}`,
+			expectedError: "unexpected error while handling the request",
+			expectedLevel: logrus.DebugLevel,
 		},
 		{
 			name:         "HTTP error",
@@ -189,8 +243,14 @@ func TestServer_ErrorHandling(t *testing.T) {
 				BuildHandler()
 			require.NoError(t, err)
 
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.canceled {
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				req = req.WithContext(ctx)
+			}
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			handler.ServeHTTP(rec, req)
 
 			assert.Equal(t, tt.expectedCode, rec.Code)
 			assert.JSONEq(t, tt.expectedBody, rec.Body.String())
@@ -210,21 +270,26 @@ func TestServer_ErrorHandling(t *testing.T) {
 			}
 			assert.Equal(t, float64(1), counterValue(t, registry, "test_http_requests_total", labels))
 
-			// Only the errors that don't carry an HTTP status are logged as errors.
-			errorEntry := findLogEntry(hook, tt.expectedError)
+			// Only the errors that don't carry an HTTP status are logged.
 			if tt.expectedError == "" {
 				for _, entry := range hook.AllEntries() {
-					assert.NotEqual(t, logrus.ErrorLevel, entry.Level, entry.Message)
+					assert.NotContains(t, []logrus.Level{logrus.WarnLevel, logrus.ErrorLevel}, entry.Level, entry.Message)
 				}
 				return
 			}
+			errorEntry := findLogEntry(hook, tt.expectedError)
 			require.NotNil(t, errorEntry)
-			assert.Equal(t, logrus.ErrorLevel, errorEntry.Level)
+			assert.Equal(t, tt.expectedLevel, errorEntry.Level)
 			assert.Equal(t, http.MethodGet, errorEntry.Data["method"])
 			assert.Equal(t, tt.path, errorEntry.Data["uri"])
 			if tt.expectedPanic != "" {
-				assert.EqualError(t, errorEntry.Data[logrus.ErrorKey].(error), tt.expectedPanic)
-				assert.Contains(t, errorEntry.Data["stack"], "goroutine")
+				loggedErr, ok := errorEntry.Data[logrus.ErrorKey].(error)
+				require.True(t, ok, "the value of the panic must be logged as an error")
+				assert.EqualError(t, loggedErr, tt.expectedPanic)
+				// Only the stack of the goroutine that panicked is logged.
+				stack, ok := errorEntry.Data["stack"].(string)
+				require.True(t, ok, "the stack must be logged")
+				assert.Len(t, goroutineHeader.FindAllString(stack, -1), 1, stack)
 			}
 		})
 	}

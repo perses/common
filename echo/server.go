@@ -59,6 +59,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -88,7 +89,7 @@ const (
 var (
 	// http address listened
 	addr string
-	// hide port when printing the server status on stdout
+	// hide the address listened when logging that the server started
 	hidePort bool
 	// https cert for server
 	cert string
@@ -104,7 +105,7 @@ var (
 
 func InitFlag() {
 	flag.StringVar(&addr, "web.listen-address", defaultAddr, "The address to listen on for HTTP requests, web interface and telemetry.")
-	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
+	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, the address listened to receive the HTTP requests is not logged when the server starts")
 	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server. It is reloaded when the file changes.")
 	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server. It is reloaded when the file changes.")
 	flag.StringVar(&tlsMinVersion, "web.tls-min-version", "", "Minimum TLS version (e.g., \"1.2\", \"1.3\")")
@@ -194,6 +195,8 @@ type Builder struct {
 	readTimeout        time.Duration
 	writeTimeout       time.Duration
 	idleTimeout        time.Duration
+	ipExtractor        echo.IPExtractor
+	schemeExtractor    echo.SchemeExtractor
 }
 
 func NewBuilder() *Builder {
@@ -294,6 +297,28 @@ func (b *Builder) IdleTimeout(timeout time.Duration) *Builder {
 	return b
 }
 
+// IPExtractor sets how echo.Context.RealIP gets the IP address of the client.
+// By default, the address of the direct peer (http.Request.RemoteAddr) is used, as the headers X-Forwarded-For and X-Real-IP
+// can be spoofed by any client. When the server is behind proxies, use an extractor that only trusts the headers set by them,
+// for example:
+//
+//	builder.IPExtractor(echo.ExtractIPFromXFFHeader(echo.TrustIPRange(proxyNetwork)))
+func (b *Builder) IPExtractor(extractor echo.IPExtractor) *Builder {
+	b.ipExtractor = extractor
+	return b
+}
+
+// SchemeExtractor sets how echo.Context.Scheme gets the scheme (http or https) used by the client.
+// By default, the headers like X-Forwarded-Proto are only trusted when the request comes from a loopback, link-local or
+// private network address. When the server is behind a proxy with another address (like a CDN or a cloud load balancer),
+// use an extractor that trusts it, for example:
+//
+//	builder.SchemeExtractor(echo.ExtractSchemeFromHeaders(echo.TrustIPRange(proxyNetwork)))
+func (b *Builder) SchemeExtractor(extractor echo.SchemeExtractor) *Builder {
+	b.schemeExtractor = extractor
+	return b
+}
+
 func (b *Builder) Build() (async.Task, error) {
 	return b.build()
 }
@@ -350,8 +375,9 @@ func (b *Builder) build() (*server, error) {
 		defaultMiddleware = append(defaultMiddleware,
 			// Recover from the panics anywhere in the rest of the chain.
 			// The panic is returned as an error (with the stack trace) that is logged by the central error handler.
+			// Only the stack of the goroutine that panicked is kept: getting the stacks of all the goroutines stops the world.
 			// More information here: https://echo.labstack.com/docs/middleware/recover
-			middleware.Recover(),
+			middleware.RecoverWithConfig(middleware.RecoverConfig{DisableStackAll: true}),
 			middleware.GzipWithConfig(
 				middleware.GzipConfig{
 					Skipper: b.gzipSkipper,
@@ -385,7 +411,13 @@ func (b *Builder) build() (*server, error) {
 		logrus.Warn("--web.tls-min-version, --web.tls-max-version and --web.tls-cipher-suites have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
 	}
 
-	e := echo.NewWithConfig(echo.Config{HTTPErrorHandler: handleError})
+	e := echo.NewWithConfig(echo.Config{
+		// echo logs with log/slog: its logs are written with logrus, like the other logs.
+		Logger:           slog.New(logrusHandler{}),
+		HTTPErrorHandler: handleError,
+		IPExtractor:      b.ipExtractor,
+		SchemeExtractor:  b.schemeExtractor,
+	})
 	readHeaderTimeout := b.readHeaderTimeout
 	if readHeaderTimeout == 0 {
 		readHeaderTimeout = defaultReadHeaderTimeout
@@ -486,7 +518,7 @@ func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) err
 	startConfig := echo.StartConfig{
 		Address:    s.addr,
 		HideBanner: true,
-		// echo logs the address with its own logger, so it is logged with logrus by logListenerAddr instead.
+		// The address is logged by logListenerAddr instead of echo, to tell if the server uses HTTPS (like echo v4).
 		HidePort:         true,
 		ListenerAddrFunc: s.logListenerAddr,
 		GracefulTimeout:  s.shutdownTimeout,
@@ -541,16 +573,8 @@ func (s *server) configureHTTPServer(httpServer *http.Server) {
 	httpServer.ReadTimeout = s.readTimeout
 	httpServer.WriteTimeout = s.writeTimeout
 	httpServer.IdleTimeout = s.idleTimeout
-	// The errors of the server (like the TLS handshake errors) are logged with logrus instead of the logger of echo.
-	httpServer.ErrorLog = log.New(logrusErrorWriter{}, "", 0)
-}
-
-// logrusErrorWriter logs with logrus, as an error, every line written by a log.Logger.
-type logrusErrorWriter struct{}
-
-func (logrusErrorWriter) Write(p []byte) (int, error) {
-	logrus.Error(strings.TrimSuffix(string(p), "\n"))
-	return len(p), nil
+	// echo logs every error of the server as an error, but the TLS handshake errors are caused by the clients.
+	httpServer.ErrorLog = log.New(httpServerErrorWriter{}, "", 0)
 }
 
 var defaultHTTPErrorHandler = echo.DefaultHTTPErrorHandler(false)
@@ -563,13 +587,26 @@ func handleError(c *echo.Context, err error) {
 	// The path logged by the access logger is used, as the handlers can rewrite the path of the request.
 	entry := logrus.WithField("method", c.Request().Method).WithField("uri", persesMiddleware.RequestPath(c))
 	// A panic is checked first: its value can carry an HTTP status (like panic(echo.NewHTTPError(...))).
-	var panicErr *middleware.PanicStackError
-	if errors.As(err, &panicErr) {
+	if panicErr, ok := errors.AsType[*middleware.PanicStackError](err); ok {
 		entry.WithError(panicErr.Err).WithField("stack", string(panicErr.Stack)).Error("panic recovered while handling the request")
 	} else if echo.StatusCode(err) == 0 {
-		entry.WithError(err).Error("unexpected error while handling the request")
+		entry.WithError(err).Log(unexpectedErrorLevel(c), "unexpected error while handling the request")
 	}
 	defaultHTTPErrorHandler(c, err)
+}
+
+// unexpectedErrorLevel returns the level of the log of an unexpected error.
+// The error is less severe when the client went away, or when the response is already sent.
+func unexpectedErrorLevel(c *echo.Context) logrus.Level {
+	if errors.Is(c.Request().Context().Err(), context.Canceled) {
+		// The request is canceled when the client closes the connection, so the error is likely caused by this cancellation.
+		return logrus.DebugLevel
+	}
+	if response, _ := echo.UnwrapResponse(c.Response()); response != nil && response.Committed {
+		// The client already received the status of the response, which the error cannot change anymore.
+		return logrus.WarnLevel
+	}
+	return logrus.ErrorLevel
 }
 
 // tlsConfig builds the TLS configuration of the HTTPS server.

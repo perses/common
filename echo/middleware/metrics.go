@@ -66,6 +66,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 
 // ProcessHTTPRequest is an echo middleware. It will intercept all responses.
 // It will increase the metrics that count the number of HTTP request and calculate the time took to respond.
+// It must be executed before the middleware Recover, so the panics are counted too.
 // The error returned by the next handler is returned as is, to be handled by the central error handler of echo.
 // The status code counted is the one of the response that will be sent, resolved from this error.
 func (m *Metrics) ProcessHTTPRequest(next echo.HandlerFunc) echo.HandlerFunc {

@@ -37,10 +37,15 @@ var defaultLoggerConfig = LoggerConfig{
 	},
 }
 
+// Logger returns a middleware that logs every request (its method, escaped path and status) with logrus, once it is handled.
+// It must be executed before the middleware Recover, so the panics are logged too.
+// The error returned by the next handler is not handled here: it is returned, to be handled once by the central error handler of echo.
+// The status logged is the one of the response that the error handler will send.
 func Logger() echo.MiddlewareFunc {
 	return LoggerWithConfig(defaultLoggerConfig)
 }
 
+// LoggerWithConfig returns a Logger middleware (see Logger) with the given configuration.
 func LoggerWithConfig(config LoggerConfig) echo.MiddlewareFunc {
 	if config.Skipper == nil {
 		config.Skipper = defaultLoggerConfig.Skipper
