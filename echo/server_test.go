@@ -15,6 +15,7 @@ package echo
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"io"
 	"log"
@@ -303,6 +304,9 @@ func TestSupportedCurves(t *testing.T) {
 func TestIsTLS13OnlyCurve(t *testing.T) {
 	for _, curve := range supportedCurves {
 		t.Run(curve.String(), func(t *testing.T) {
+			if fips140.Enabled() && !isFIPSApprovedCurve(curve) {
+				t.Skip("crypto/tls only uses the FIPS-approved curves in FIPS 140-3 mode")
+			}
 			server := httptest.NewUnstartedServer(http.NotFoundHandler())
 			server.TLS = &tls.Config{CurvePreferences: []tls.CurveID{curve}}
 			// The TLS 1.2 handshake failures are expected.
@@ -329,18 +333,35 @@ func TestIsTLS13OnlyCurve(t *testing.T) {
 func TestCheckCurvePreferences(t *testing.T) {
 	tests := []struct {
 		name            string
+		minVersion      uint16
 		maxVersion      uint16
 		curves          []tls.CurveID
 		expectedError   string
 		expectedWarning string
 	}{
 		{
-			name:   "post-quantum curves without max version",
-			curves: []tls.CurveID{tls.X25519MLKEM768},
+			name:   "default curves without versions",
+			curves: nil,
 		},
 		{
-			name:       "post-quantum curves with TLS 1.3",
-			maxVersion: tls.VersionTLS13,
+			name:   "post-quantum and classic curves without versions",
+			curves: []tls.CurveID{tls.X25519MLKEM768, tls.X25519},
+		},
+		{
+			name:            "only post-quantum curves without versions",
+			curves:          []tls.CurveID{tls.X25519MLKEM768},
+			expectedWarning: "TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit",
+		},
+		{
+			name:            "only post-quantum curves with TLS 1.2 min version",
+			minVersion:      tls.VersionTLS12,
+			maxVersion:      tls.VersionTLS13,
+			curves:          []tls.CurveID{tls.X25519MLKEM768, tls.MLKEM1024},
+			expectedWarning: "TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit",
+		},
+		{
+			name:       "only post-quantum curves with TLS 1.3 min version",
+			minVersion: tls.VersionTLS13,
 			curves:     []tls.CurveID{tls.X25519MLKEM768, tls.MLKEM1024},
 		},
 		{
@@ -369,7 +390,7 @@ func TestCheckCurvePreferences(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			hook := newLogHook(t)
-			err := checkCurvePreferences(tt.maxVersion, tt.curves)
+			err := checkCurvePreferences(tt.minVersion, tt.maxVersion, tt.curves)
 			if tt.expectedError != "" {
 				require.EqualError(t, err, tt.expectedError)
 			} else {
@@ -377,6 +398,84 @@ func TestCheckCurvePreferences(t *testing.T) {
 			}
 
 			// checkCurvePreferences only logs the warning.
+			if tt.expectedWarning == "" {
+				assert.Empty(t, hook.AllEntries())
+			} else if assert.Len(t, hook.AllEntries(), 1) {
+				assert.Equal(t, logrus.WarnLevel, hook.LastEntry().Level)
+				assert.Equal(t, tt.expectedWarning, hook.LastEntry().Message)
+			}
+		})
+	}
+}
+
+// TestIsFIPSApprovedCurve checks isFIPSApprovedCurve matches crypto/tls, which doesn't expose this information:
+// in FIPS 140-3 mode, a handshake allowing only one curve must succeed if and only if isFIPSApprovedCurve returns true.
+// It only runs in FIPS 140-3 mode: GODEBUG=fips140=on go test ./echo/
+func TestIsFIPSApprovedCurve(t *testing.T) {
+	if !fips140.Enabled() {
+		t.Skip("crypto/tls only restricts the curves in FIPS 140-3 mode (GODEBUG=fips140=on)")
+	}
+	for _, curve := range supportedCurves {
+		t.Run(curve.String(), func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.NotFoundHandler())
+			server.TLS = &tls.Config{CurvePreferences: []tls.CurveID{curve}}
+			// The handshake failures with the curves that aren't FIPS-approved are expected.
+			server.Config.ErrorLog = log.New(io.Discard, "", 0)
+			server.StartTLS()
+			defer server.Close()
+
+			state, err := dialTLSServer(server.Listener.Addr().String(), &tls.Config{CurvePreferences: supportedCurves})
+			if !isFIPSApprovedCurve(curve) {
+				assert.Error(t, err, "crypto/tls uses %s in FIPS 140-3 mode: add it to isFIPSApprovedCurve", curve)
+			} else if assert.NoError(t, err, "crypto/tls doesn't use %s in FIPS 140-3 mode: remove it from isFIPSApprovedCurve", curve) {
+				assert.Equal(t, curve, state.CurveID)
+			}
+		})
+	}
+}
+
+func TestCheckFIPSCurvePreferences(t *testing.T) {
+	tests := []struct {
+		name            string
+		curves          []tls.CurveID
+		expected        []tls.CurveID
+		expectedError   string
+		expectedWarning string
+	}{
+		{
+			name:     "default curves",
+			curves:   nil,
+			expected: nil,
+		},
+		{
+			name:     "only FIPS-approved curves",
+			curves:   []tls.CurveID{tls.X25519MLKEM768, tls.CurveP256},
+			expected: []tls.CurveID{tls.X25519MLKEM768, tls.CurveP256},
+		},
+		{
+			name:            "some curves not FIPS-approved",
+			curves:          []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP256},
+			expected:        []tls.CurveID{tls.X25519MLKEM768, tls.CurveP256},
+			expectedWarning: "the curves X25519 of --web.tls-curve-preferences are ignored, because they are not allowed in FIPS 140-3 mode",
+		},
+		{
+			name:          "no FIPS-approved curve",
+			curves:        []tls.CurveID{tls.X25519},
+			expectedError: "--web.tls-curve-preferences only contains curves that are not allowed in FIPS 140-3 mode (X25519)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := newLogHook(t)
+			result, err := checkFIPSCurvePreferences(tt.curves)
+			if tt.expectedError != "" {
+				require.EqualError(t, err, tt.expectedError)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+
 			if tt.expectedWarning == "" {
 				assert.Empty(t, hook.AllEntries())
 			} else if assert.Len(t, hook.AllEntries(), 1) {

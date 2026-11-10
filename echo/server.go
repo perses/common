@@ -54,6 +54,7 @@ package echo
 import (
 	"cmp"
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -124,6 +125,19 @@ var supportedCurves = []tls.CurveID{
 func isTLS13OnlyCurve(id tls.CurveID) bool {
 	switch id {
 	case tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024:
+		return true
+	default:
+		return false
+	}
+}
+
+// isFIPSApprovedCurve tells if crypto/tls uses the curve in FIPS 140-3 mode (like its unexported allowedCurvePreferencesFIPS).
+// TestIsFIPSApprovedCurve checks it matches the behavior of crypto/tls when the tests run with GODEBUG=fips140=on.
+// Note: Go+BoringCrypto builds allow fewer curves, but their FIPS mode (crypto/tls/fipsonly) isn't reported by fips140.Enabled.
+func isFIPSApprovedCurve(id tls.CurveID) bool {
+	switch id {
+	case tls.CurveP256, tls.CurveP384, tls.CurveP521,
+		tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024:
 		return true
 	default:
 		return false
@@ -235,12 +249,34 @@ func parseCurvePreferences(curves string) ([]tls.CurveID, error) {
 	return result, nil
 }
 
-// checkCurvePreferences checks the curves can be used with the TLS max version: when TLS 1.3 is disabled and all the
-// curves require it, no ECDHE key exchange is possible.
-func checkCurvePreferences(maxVersion uint16, curves []tls.CurveID) error {
-	if maxVersion == 0 || maxVersion >= tls.VersionTLS13 {
-		return nil
+// checkFIPSCurvePreferences returns the curves crypto/tls uses in FIPS 140-3 mode, where it ignores the curves that
+// aren't FIPS-approved: when none of the curves is approved, no key exchange is possible.
+func checkFIPSCurvePreferences(curves []tls.CurveID) ([]tls.CurveID, error) {
+	var approved []tls.CurveID
+	var notApproved []string
+	for _, id := range curves {
+		if isFIPSApprovedCurve(id) {
+			approved = append(approved, id)
+		} else {
+			notApproved = append(notApproved, id.String())
+		}
 	}
+	if len(notApproved) == 0 {
+		return curves, nil
+	}
+	if len(approved) == 0 {
+		return nil, fmt.Errorf("--web.tls-curve-preferences only contains curves that are not allowed in FIPS 140-3 mode (%s)",
+			strings.Join(notApproved, ", "))
+	}
+	logrus.Warnf("the curves %s of --web.tls-curve-preferences are ignored, because they are not allowed in FIPS 140-3 mode",
+		strings.Join(notApproved, ", "))
+	return approved, nil
+}
+
+// checkCurvePreferences checks the curves can be used with the TLS versions:
+//   - when TLS 1.3 is disabled and all the curves require it, no ECDHE key exchange is possible.
+//   - when TLS 1.2 is enabled and all the curves require TLS 1.3, the TLS 1.2 clients cannot connect.
+func checkCurvePreferences(minVersion, maxVersion uint16, curves []tls.CurveID) error {
 	var tls13Only []string
 	for _, id := range curves {
 		if isTLS13OnlyCurve(id) {
@@ -250,12 +286,19 @@ func checkCurvePreferences(maxVersion uint16, curves []tls.CurveID) error {
 	if len(tls13Only) == 0 {
 		return nil
 	}
-	if len(tls13Only) == len(curves) {
+	onlyTLS13 := len(tls13Only) == len(curves)
+	// The versions are 0 when unset: TLS 1.2 and TLS 1.3 are then both enabled.
+	tls13Disabled := maxVersion != 0 && maxVersion < tls.VersionTLS13
+	switch {
+	case tls13Disabled && onlyTLS13:
 		return fmt.Errorf("--web.tls-curve-preferences only contains curves that require TLS 1.3 (%s), but --web.tls-max-version is %s",
 			strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
+	case tls13Disabled:
+		logrus.Warnf("the curves %s of --web.tls-curve-preferences are ignored, because they require TLS 1.3 and --web.tls-max-version is %s",
+			strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
+	case onlyTLS13 && minVersion < tls.VersionTLS13:
+		logrus.Warn("TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit")
 	}
-	logrus.Warnf("the curves %s of --web.tls-curve-preferences are ignored, because they require TLS 1.3 and --web.tls-max-version is %s",
-		strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
 	return nil
 }
 
@@ -495,7 +538,13 @@ func (b *Builder) build() (*server, error) {
 		return nil, fmt.Errorf("TLS min version (%s) cannot be greater than max version (%s)",
 			tlsVersionToString(parsedMinVersion), tlsVersionToString(parsedMaxVersion))
 	}
-	if err = checkCurvePreferences(parsedMaxVersion, parsedCurvePreferences); err != nil {
+	usableCurves := parsedCurvePreferences
+	if fips140.Enabled() {
+		if usableCurves, err = checkFIPSCurvePreferences(usableCurves); err != nil {
+			return nil, err
+		}
+	}
+	if err = checkCurvePreferences(parsedMinVersion, parsedMaxVersion, usableCurves); err != nil {
 		return nil, err
 	}
 	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "" || tlsCurvePreferences != "") {
