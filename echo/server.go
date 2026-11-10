@@ -538,14 +538,17 @@ func (b *Builder) build() (*server, error) {
 		return nil, fmt.Errorf("TLS min version (%s) cannot be greater than max version (%s)",
 			tlsVersionToString(parsedMinVersion), tlsVersionToString(parsedMaxVersion))
 	}
-	usableCurves := parsedCurvePreferences
-	if fips140.Enabled() {
-		if usableCurves, err = checkFIPSCurvePreferences(usableCurves); err != nil {
+	// The curve checks only run when HTTPS is enabled: otherwise, the TLS flags have no effect (see the warning below).
+	if cert != "" {
+		usableCurves := parsedCurvePreferences
+		if fips140.Enabled() {
+			if usableCurves, err = checkFIPSCurvePreferences(usableCurves); err != nil {
+				return nil, err
+			}
+		}
+		if err = checkCurvePreferences(parsedMinVersion, parsedMaxVersion, usableCurves); err != nil {
 			return nil, err
 		}
-	}
-	if err = checkCurvePreferences(parsedMinVersion, parsedMaxVersion, usableCurves); err != nil {
-		return nil, err
 	}
 	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "" || tlsCurvePreferences != "") {
 		logrus.Warn("--web.tls-min-version, --web.tls-max-version, --web.tls-cipher-suites and --web.tls-curve-preferences have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")

@@ -288,7 +288,8 @@ func TestParseCurvePreferences(t *testing.T) {
 
 // TestSupportedCurves checks supportedCurves lists every curve of crypto/tls, as crypto/tls doesn't expose this list.
 // It relies on tls.CurveID.String, which returns the name of the known curves and "CurveID(<id>)" for the others.
-// If it fails after a Go upgrade, add the new curves to supportedCurves (TestIsTLS13OnlyCurve then checks if they require TLS 1.3).
+// If it fails after a Go upgrade, add the new curves to supportedCurves (TestIsTLS13OnlyCurve then checks if they require TLS 1.3,
+// and TestIsFIPSApprovedCurve, run in FIPS 140-3 mode by make test, checks if they are FIPS-approved).
 func TestSupportedCurves(t *testing.T) {
 	var known []tls.CurveID
 	for i := range 1 << 16 {
@@ -629,20 +630,24 @@ func TestBuild_TLSCipherSuitesValidation(t *testing.T) {
 }
 
 func TestBuild_TLSCurvePreferencesValidation(t *testing.T) {
+	const noHTTPSWarning = "--web.tls-min-version, --web.tls-max-version, --web.tls-cipher-suites and --web.tls-curve-preferences have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)"
 	tests := []struct {
-		name        string
-		curves      string
-		maxVersion  string
-		expectError bool
-		errorMsg    string
+		name             string
+		curves           string
+		maxVersion       string
+		https            bool
+		expectError      bool
+		errorMsg         string
+		expectedWarnings []string
 	}{
 		{
-			name:   "empty curves",
-			curves: "",
+			name:  "empty curves",
+			https: true,
 		},
 		{
 			name:   "valid curves",
-			curves: "X25519MLKEM768,X25519",
+			curves: "X25519MLKEM768,CurveP256",
+			https:  true,
 		},
 		{
 			name:        "invalid curves",
@@ -654,8 +659,27 @@ func TestBuild_TLSCurvePreferencesValidation(t *testing.T) {
 			name:        "only post-quantum curves with TLS 1.2",
 			curves:      "X25519MLKEM768",
 			maxVersion:  "1.2",
+			https:       true,
 			expectError: true,
 			errorMsg:    "only contains curves that require TLS 1.3 (X25519MLKEM768)",
+		},
+		{
+			name:             "only post-quantum curves",
+			curves:           "X25519MLKEM768",
+			https:            true,
+			expectedWarnings: []string{"TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit"},
+		},
+		// Without HTTPS, the TLS flags have no effect: the curves are not checked.
+		{
+			name:             "only post-quantum curves with TLS 1.2 without HTTPS",
+			curves:           "X25519MLKEM768",
+			maxVersion:       "1.2",
+			expectedWarnings: []string{noHTTPSWarning},
+		},
+		{
+			name:             "only post-quantum curves without HTTPS",
+			curves:           "X25519MLKEM768",
+			expectedWarnings: []string{noHTTPSWarning},
 		},
 	}
 
@@ -663,13 +687,23 @@ func TestBuild_TLSCurvePreferencesValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			origCurvePreferences := tlsCurvePreferences
 			origMaxVersion := tlsMaxVersion
+			origCert := cert
+			origKey := key
 			tlsCurvePreferences = tt.curves
 			tlsMaxVersion = tt.maxVersion
+			if tt.https {
+				// Build doesn't read the files.
+				cert = "/path/cert.pem"
+				key = "/path/key.pem"
+			}
 			defer func() {
 				tlsCurvePreferences = origCurvePreferences
 				tlsMaxVersion = origMaxVersion
+				cert = origCert
+				key = origKey
 			}()
 
+			hook := newLogHook(t)
 			_, err := NewBuilder().
 				APIRegistration(&mockRegister{}).
 				OverrideDefaultMiddleware(true).
@@ -677,9 +711,16 @@ func TestBuild_TLSCurvePreferencesValidation(t *testing.T) {
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
-			} else {
-				require.NoError(t, err)
+				return
 			}
+			require.NoError(t, err)
+			var warnings []string
+			for _, entry := range hook.AllEntries() {
+				if entry.Level == logrus.WarnLevel {
+					warnings = append(warnings, entry.Message)
+				}
+			}
+			assert.Equal(t, tt.expectedWarnings, warnings)
 		})
 	}
 }
