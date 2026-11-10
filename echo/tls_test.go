@@ -20,6 +20,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
+	"io/fs"
 	"math/big"
 	"net"
 	"os"
@@ -130,7 +132,7 @@ func TestNewCertificateReloader(t *testing.T) {
 	}
 }
 
-func TestCertificateReloader_GetCertificate(t *testing.T) {
+func TestCertificateReloader_Get(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile := writeCertificate(t, dir, 1)
 	r, err := newCertificateReloader(certFile, keyFile)
@@ -177,7 +179,16 @@ func TestNewClientCAReloader(t *testing.T) {
 	replaceFile(t, notPEMFile, []byte("not a certificate"))
 
 	_, err := newClientCAReloader(filepath.Join(dir, "missing.crt"))
-	assert.ErrorContains(t, err, "no such file or directory")
+	require.ErrorIs(t, err, fs.ErrNotExist)
 	_, err = newClientCAReloader(notPEMFile)
-	assert.ErrorContains(t, err, "no certificate found in "+notPEMFile)
+	assert.ErrorContains(t, err, fmt.Sprintf("no certificate found in %q", notPEMFile))
+
+	caPEM, _ := generateCertificate(t, 1)
+	caFile := filepath.Join(dir, "ca.crt")
+	replaceFile(t, caFile, caPEM)
+	r, err := newClientCAReloader(caFile)
+	require.NoError(t, err)
+	expected := x509.NewCertPool()
+	require.True(t, expected.AppendCertsFromPEM(caPEM))
+	assert.True(t, expected.Equal(r.get()))
 }

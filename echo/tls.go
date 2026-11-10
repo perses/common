@@ -46,11 +46,11 @@ func newFileReloader[T any](name string, load func() (T, error), files ...string
 	r := &fileReloader[T]{name: name, files: files, load: load}
 	infos, err := r.stat()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to load the %s: %w", name, err)
 	}
 	r.infos = infos
 	if r.value, err = load(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unable to load the %s: %w", name, err)
 	}
 	return r, nil
 }
@@ -118,7 +118,7 @@ func newClientCAReloader(caFile string) (*fileReloader[*x509.CertPool], error) {
 		}
 		clientCAs := x509.NewCertPool()
 		if !clientCAs.AppendCertsFromPEM(caPEM) {
-			return nil, fmt.Errorf("no certificate found in %s", caFile)
+			return nil, fmt.Errorf("no certificate found in %q", caFile)
 		}
 		return clientCAs, nil
 	}, caFile)

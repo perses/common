@@ -525,9 +525,15 @@ func startTLSServer(t *testing.T, certFile, keyFile, minVersion, cipherSuites st
 		require.NoError(t, task.Finalize())
 	})
 
+	// echo wraps the listener with TLS before serving, so the server is ready once the port is open. A TLS handshake
+	// would not work when a client CA is set with TLS 1.2, as the server rejects a client without certificate.
 	require.Eventually(t, func() bool {
-		_, dialErr := dialTLSServer(address, &tls.Config{})
-		return dialErr == nil
+		conn, dialErr := net.Dial("tcp", address)
+		if dialErr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
 	}, 5*time.Second, 10*time.Millisecond)
 	return address
 }
@@ -604,8 +610,6 @@ func TestServer_TLSClientCA(t *testing.T) {
 	defer func() {
 		clientCAFile = origClientCAFile
 	}()
-	// startTLSServer waits for a handshake without a client certificate. It only succeeds because, with TLS 1.3, the
-	// client completes the handshake before the server verifies its certificate: keep TLS 1.3 enabled in this test.
 	address := startTLSServer(t, certFile, keyFile, "", "")
 
 	// An HTTP request is sent, as with TLS 1.3, the client completes the handshake before the server verifies its
@@ -639,6 +643,59 @@ func TestServer_TLSClientCA(t *testing.T) {
 	replaceFile(t, caFile, []byte("not a certificate"))
 	require.NoError(t, get(otherClientCertificate))
 	assert.ErrorContains(t, get(clientCertificate), "unknown certificate authority")
+}
+
+// A resumed session must not bypass the rotation of the client CA.
+func TestServer_TLSClientCAResumption(t *testing.T) {
+	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		t.Run(tls.VersionName(version), func(t *testing.T) {
+			dir := t.TempDir()
+			certFile, keyFile := writeCertificate(t, dir, 1)
+			clientPEM, clientKeyPEM := generateCertificate(t, 2)
+			clientCertificate, err := tls.X509KeyPair(clientPEM, clientKeyPEM)
+			require.NoError(t, err)
+			otherClientPEM, _ := generateCertificate(t, 3)
+			caFile := filepath.Join(dir, "ca.crt")
+			replaceFile(t, caFile, clientPEM)
+
+			origClientCAFile := clientCAFile
+			clientCAFile = caFile
+			defer func() {
+				clientCAFile = origClientCAFile
+			}()
+			address := startTLSServer(t, certFile, keyFile, "", "")
+
+			// Every connection uses the same TLS configuration, so the same session cache.
+			clientConfig := &tls.Config{
+				InsecureSkipVerify: true,
+				Certificates:       []tls.Certificate{clientCertificate},
+				ClientSessionCache: tls.NewLRUClientSessionCache(1),
+				MaxVersion:         version,
+			}
+			get := func() (*tls.ConnectionState, error) {
+				client := &http.Client{
+					Timeout:   5 * time.Second,
+					Transport: &http.Transport{TLSClientConfig: clientConfig, DisableKeepAlives: true},
+				}
+				resp, reqErr := client.Get("https://" + address)
+				if reqErr != nil {
+					return nil, reqErr
+				}
+				return resp.TLS, resp.Body.Close()
+			}
+
+			_, err = get()
+			require.NoError(t, err)
+			state, err := get()
+			require.NoError(t, err)
+			require.True(t, state.DidResume)
+
+			// The CA is rotated: the session is not resumed, and the full handshake fails.
+			replaceFile(t, caFile, otherClientPEM)
+			_, err = get()
+			assert.ErrorContains(t, err, "unknown certificate authority")
+		})
+	}
 }
 
 func TestBuild_PartialTLSConfiguration(t *testing.T) {

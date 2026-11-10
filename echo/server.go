@@ -112,7 +112,7 @@ func InitFlag() {
 	flag.StringVar(&tlsMinVersion, "web.tls-min-version", "", "Minimum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsMaxVersion, "web.tls-max-version", "", "Maximum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsCipherSuites, "web.tls-cipher-suites", "", "Comma-separated list of TLS cipher suite names")
-	flag.StringVar(&clientCAFile, "web.tls-client-ca-file", "", "The path to the CA certificates (PEM) used to verify the client certificates. When set, every client must present a certificate signed by one of them (mTLS), including the health probes. Only these CAs are trusted, not the system ones. It is reloaded when the file changes.")
+	flag.StringVar(&clientCAFile, "web.tls-client-ca-file", "", "The path to the CA certificates (PEM) used to verify the client certificates. When set, every client must present a certificate signed by one of them (mTLS), including the health probes. Only these CAs are trusted, not the system ones. It is reloaded when the file changes, but the established connections are not verified again.")
 }
 
 // parseTLSVersion converts a version string (e.g., "1.2", "1.3") to a tls.Version constant.
@@ -577,7 +577,7 @@ func (s *server) configureHTTPServer(httpServer *http.Server) {
 // tlsConfig builds the TLS configuration of the HTTPS server.
 // The certificate and the client CA are provided by reloaders, so they are rotated without restarting the server.
 func (s *server) tlsConfig() (*tls.Config, error) {
-	reloader, err := newCertificateReloader(s.cert, s.key)
+	certReloader, err := newCertificateReloader(s.cert, s.key)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +586,7 @@ func (s *server) tlsConfig() (*tls.Config, error) {
 		MaxVersion:   s.tlsMaxVersion,
 		CipherSuites: s.tlsCipherSuites,
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return reloader.get(), nil
+			return certReloader.get(), nil
 		},
 	}
 	if isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites) {
@@ -595,17 +595,20 @@ func (s *server) tlsConfig() (*tls.Config, error) {
 		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, one of which HTTP/2 requires with TLS 1.2 (RFC 7540, section 9.2.2)")
 	}
 	if s.clientCAFile != "" {
-		clientCAs, err := newClientCAReloader(s.clientCAFile)
-		if err != nil {
-			return nil, err
+		clientCAReloader, caErr := newClientCAReloader(s.clientCAFile)
+		if caErr != nil {
+			return nil, caErr
 		}
 		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		// Without ClientCAs, the client certificates would be verified with the system CAs, so the base configuration
+		// has them as well in case it is used without GetConfigForClient.
+		tlsConfig.ClientCAs = clientCAReloader.get()
 		// tls.Config.ClientCAs cannot be changed once the server started, so each handshake uses a copy of the
 		// configuration with the current client CA. The resumed sessions are verified again with it as well.
 		tlsConfig.GetConfigForClient = func(_ *tls.ClientHelloInfo) (*tls.Config, error) {
 			config := tlsConfig.Clone()
 			config.GetConfigForClient = nil
-			config.ClientCAs = clientCAs.get()
+			config.ClientCAs = clientCAReloader.get()
 			return config, nil
 		}
 	}
