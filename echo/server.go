@@ -102,7 +102,33 @@ var (
 	tlsCipherSuites string
 	// CA certificates used to verify the client certificates (mTLS)
 	clientCAFile string
+	// TLS curve preferences, also called key exchange mechanisms (comma-separated list of curve names)
+	tlsCurvePreferences string
 )
+
+// supportedCurves lists the TLS curves (key exchange mechanisms) implemented by crypto/tls.
+// Unlike the cipher suites (see tls.CipherSuites), crypto/tls doesn't expose this list, so it must be updated when Go adds a curve.
+var supportedCurves = []tls.CurveID{
+	tls.CurveP256,
+	tls.CurveP384,
+	tls.CurveP521,
+	tls.X25519,
+	tls.X25519MLKEM768,
+	tls.SecP256r1MLKEM768,
+	tls.SecP384r1MLKEM1024,
+	tls.MLKEM1024,
+}
+
+// isTLS13OnlyCurve tells if crypto/tls only uses the curve with TLS 1.3 (like its unexported isTLS13OnlyKeyExchange).
+// Today, these are the post-quantum key exchanges. TestIsTLS13OnlyCurve checks it matches the behavior of crypto/tls.
+func isTLS13OnlyCurve(id tls.CurveID) bool {
+	switch id {
+	case tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024:
+		return true
+	default:
+		return false
+	}
+}
 
 func InitFlag() {
 	flag.StringVar(&addr, "web.listen-address", defaultAddr, "The address to listen on for HTTP requests, web interface and telemetry.")
@@ -113,6 +139,7 @@ func InitFlag() {
 	flag.StringVar(&tlsMaxVersion, "web.tls-max-version", "", "Maximum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsCipherSuites, "web.tls-cipher-suites", "", "Comma-separated list of TLS cipher suite names")
 	flag.StringVar(&clientCAFile, "web.tls-client-ca-file", "", "The path to the CA certificates (PEM) used to verify the client certificates. When set, every client must present a certificate signed by one of them (mTLS), including the health probes. Only these CAs are trusted, not the system ones. It is reloaded when the file changes, but the established connections are not verified again.")
+	flag.StringVar(&tlsCurvePreferences, "web.tls-curve-preferences", "", "Comma-separated list of TLS curves (key exchange mechanisms), e.g. \"X25519MLKEM768,X25519,CurveP256\". Replaces Go's default list, including its post-quantum curves; the order is ignored.")
 }
 
 // parseTLSVersion converts a version string (e.g., "1.2", "1.3") to a tls.Version constant.
@@ -177,6 +204,59 @@ func parseCipherSuites(suites string) ([]uint16, error) {
 		result = append(result, id)
 	}
 	return result, nil
+}
+
+// parseCurvePreferences converts a comma-separated list of curve names (e.g., "X25519", "CurveP256", "X25519MLKEM768") to their IDs.
+// Returns nil for empty string (not set), or an error for unknown curve names.
+func parseCurvePreferences(curves string) ([]tls.CurveID, error) {
+	if curves == "" {
+		return nil, nil
+	}
+
+	curveMap := make(map[string]tls.CurveID, len(supportedCurves))
+	names := make([]string, 0, len(supportedCurves))
+	for _, id := range supportedCurves {
+		curveMap[id.String()] = id
+		names = append(names, id.String())
+	}
+
+	var result []tls.CurveID
+	for name := range strings.SplitSeq(curves, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		id, ok := curveMap[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown curve %q, valid options are: %s", name, strings.Join(names, ", "))
+		}
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// checkCurvePreferences checks the curves can be used with the TLS max version: when TLS 1.3 is disabled and all the
+// curves require it, no ECDHE key exchange is possible.
+func checkCurvePreferences(maxVersion uint16, curves []tls.CurveID) error {
+	if maxVersion == 0 || maxVersion >= tls.VersionTLS13 {
+		return nil
+	}
+	var tls13Only []string
+	for _, id := range curves {
+		if isTLS13OnlyCurve(id) {
+			tls13Only = append(tls13Only, id.String())
+		}
+	}
+	if len(tls13Only) == 0 {
+		return nil
+	}
+	if len(tls13Only) == len(curves) {
+		return fmt.Errorf("--web.tls-curve-preferences only contains curves that require TLS 1.3 (%s), but --web.tls-max-version is %s",
+			strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
+	}
+	logrus.Warnf("the curves %s of --web.tls-curve-preferences are ignored, because they require TLS 1.3 and --web.tls-max-version is %s",
+		strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
+	return nil
 }
 
 type Register interface {
@@ -405,14 +485,21 @@ func (b *Builder) build() (*server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid TLS cipher suites: %w", err)
 	}
+	parsedCurvePreferences, err := parseCurvePreferences(tlsCurvePreferences)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TLS curve preferences: %w", err)
+	}
 
 	// Validate that min version is not greater than max version
 	if parsedMinVersion != 0 && parsedMaxVersion != 0 && parsedMinVersion > parsedMaxVersion {
 		return nil, fmt.Errorf("TLS min version (%s) cannot be greater than max version (%s)",
 			tlsVersionToString(parsedMinVersion), tlsVersionToString(parsedMaxVersion))
 	}
-	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "") {
-		logrus.Warn("--web.tls-min-version, --web.tls-max-version and --web.tls-cipher-suites have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
+	if err = checkCurvePreferences(parsedMaxVersion, parsedCurvePreferences); err != nil {
+		return nil, err
+	}
+	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "" || tlsCurvePreferences != "") {
+		logrus.Warn("--web.tls-min-version, --web.tls-max-version, --web.tls-cipher-suites and --web.tls-curve-preferences have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
 	}
 
 	e := echo.NewWithConfig(echo.Config{
@@ -431,23 +518,24 @@ func (b *Builder) build() (*server, error) {
 		}
 	}
 	return &server{
-		addr:              b.addr,
-		apis:              b.apis,
-		e:                 e,
-		cert:              cert,
-		key:               key,
-		tlsMinVersion:     parsedMinVersion,
-		tlsMaxVersion:     parsedMaxVersion,
-		tlsCipherSuites:   parsedCipherSuites,
-		clientCAFile:      clientCAFile,
-		mdws:              mdws,
-		preMDWs:           b.preMDWs,
-		shutdownTimeout:   30 * time.Second,
-		activatePprof:     b.activatePprof,
-		readHeaderTimeout: readHeaderTimeout,
-		readTimeout:       b.readTimeout,
-		writeTimeout:      b.writeTimeout,
-		idleTimeout:       cmp.Or(b.idleTimeout, defaultIdleTimeout),
+		addr:                b.addr,
+		apis:                b.apis,
+		e:                   e,
+		cert:                cert,
+		key:                 key,
+		tlsMinVersion:       parsedMinVersion,
+		tlsMaxVersion:       parsedMaxVersion,
+		tlsCipherSuites:     parsedCipherSuites,
+		tlsCurvePreferences: parsedCurvePreferences,
+		clientCAFile:        clientCAFile,
+		mdws:                mdws,
+		preMDWs:             b.preMDWs,
+		shutdownTimeout:     30 * time.Second,
+		activatePprof:       b.activatePprof,
+		readHeaderTimeout:   readHeaderTimeout,
+		readTimeout:         b.readTimeout,
+		writeTimeout:        b.writeTimeout,
+		idleTimeout:         cmp.Or(b.idleTimeout, defaultIdleTimeout),
 	}, nil
 }
 
@@ -477,23 +565,24 @@ func (b *Builder) registerMetrics() (*persesMiddleware.Metrics, error) {
 
 type server struct {
 	async.Task
-	addr              string
-	apis              []Register
-	e                 *echo.Echo
-	cert              string
-	key               string
-	tlsMinVersion     uint16
-	tlsMaxVersion     uint16
-	tlsCipherSuites   []uint16
-	clientCAFile      string
-	mdws              []echo.MiddlewareFunc
-	preMDWs           []echo.MiddlewareFunc
-	shutdownTimeout   time.Duration
-	activatePprof     bool
-	readHeaderTimeout time.Duration
-	readTimeout       time.Duration
-	writeTimeout      time.Duration
-	idleTimeout       time.Duration
+	addr                string
+	apis                []Register
+	e                   *echo.Echo
+	cert                string
+	key                 string
+	tlsMinVersion       uint16
+	tlsMaxVersion       uint16
+	tlsCipherSuites     []uint16
+	tlsCurvePreferences []tls.CurveID
+	clientCAFile        string
+	mdws                []echo.MiddlewareFunc
+	preMDWs             []echo.MiddlewareFunc
+	shutdownTimeout     time.Duration
+	activatePprof       bool
+	readHeaderTimeout   time.Duration
+	readTimeout         time.Duration
+	writeTimeout        time.Duration
+	idleTimeout         time.Duration
 	// shutdownErr is the error of the graceful shutdown done by Execute (like a timeout), returned by Finalize.
 	shutdownErr error
 }
@@ -582,9 +671,10 @@ func (s *server) tlsConfig() (*tls.Config, error) {
 		return nil, err
 	}
 	tlsConfig := &tls.Config{
-		MinVersion:   s.tlsMinVersion,
-		MaxVersion:   s.tlsMaxVersion,
-		CipherSuites: s.tlsCipherSuites,
+		MinVersion:       s.tlsMinVersion,
+		MaxVersion:       s.tlsMaxVersion,
+		CipherSuites:     s.tlsCipherSuites,
+		CurvePreferences: s.tlsCurvePreferences,
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return certReloader.get(), nil
 		},
