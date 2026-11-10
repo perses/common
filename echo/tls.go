@@ -15,94 +15,113 @@ package echo
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/sirupsen/logrus"
 )
 
-// certificateReloader provides the certificate used by the HTTPS server.
-// On every TLS handshake, it checks if the certificate or the key file changed and loads them again if it is the case.
+// fileReloader provides a value loaded from files, like the certificate used by the HTTPS server.
+// On every TLS handshake, it checks if the files changed and loads them again if it is the case.
 // Like that, a rotated certificate is used for the new connections without restarting the server.
-type certificateReloader struct {
-	certFile    string
-	keyFile     string
-	mutex       sync.Mutex
-	certificate *tls.Certificate
-	certInfo    os.FileInfo
-	keyInfo     os.FileInfo
+type fileReloader[T any] struct {
+	// name describes the value in the logs (e.g., "TLS certificate").
+	name  string
+	files []string
+	load  func() (T, error)
+	mutex sync.Mutex
+	value T
+	infos []os.FileInfo
 	// statFailed is true when the files could not be checked during the previous handshake.
 	// It is used to log the error only once instead of on every handshake.
 	statFailed bool
 }
 
-// newCertificateReloader loads the certificate and the key a first time.
-// It returns an error if they cannot be loaded, so the server doesn't start with an invalid certificate.
-func newCertificateReloader(certFile, keyFile string) (*certificateReloader, error) {
-	r := &certificateReloader{
-		certFile: certFile,
-		keyFile:  keyFile,
-	}
-	certInfo, keyInfo, err := r.stat()
+// newFileReloader loads the value a first time.
+// It returns an error if it cannot be loaded, so the server doesn't start with an invalid configuration.
+func newFileReloader[T any](name string, load func() (T, error), files ...string) (*fileReloader[T], error) {
+	r := &fileReloader[T]{name: name, files: files, load: load}
+	infos, err := r.stat()
 	if err != nil {
 		return nil, err
 	}
-	r.certInfo = certInfo
-	r.keyInfo = keyInfo
-	if err = r.load(); err != nil {
+	r.infos = infos
+	if r.value, err = load(); err != nil {
 		return nil, err
 	}
 	return r, nil
 }
 
-// GetCertificate is used as tls.Config.GetCertificate.
-// When the certificate or the key cannot be loaded again, the error is logged and the previous certificate is kept.
-func (r *certificateReloader) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+// get returns the value, loaded again if the files changed.
+// When the files cannot be loaded again, the error is logged and the previous value is kept.
+func (r *fileReloader[T]) get() T {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
-	certInfo, keyInfo, err := r.stat()
+	infos, err := r.stat()
 	if err != nil {
 		if !r.statFailed {
-			logrus.WithError(err).Error("unable to check if the TLS certificate changed, the previous one is used")
+			logrus.WithError(err).Errorf("unable to check if the %s changed, the previous one is used", r.name)
 			r.statFailed = true
 		}
-		return r.certificate, nil
+		return r.value
 	}
 	r.statFailed = false
-	if isSameFile(r.certInfo, certInfo) && isSameFile(r.keyInfo, keyInfo) {
-		return r.certificate, nil
+	if slices.EqualFunc(r.infos, infos, isSameFile) {
+		return r.value
 	}
 	// The files are tracked even if they are invalid, so they are loaded again only once they change.
 	// For example, it happens when the certificate has been replaced but not yet the key.
-	r.certInfo = certInfo
-	r.keyInfo = keyInfo
-	if err = r.load(); err != nil {
-		logrus.WithError(err).Error("unable to reload the TLS certificate, the previous one is used")
-		return r.certificate, nil
+	r.infos = infos
+	value, err := r.load()
+	if err != nil {
+		logrus.WithError(err).Errorf("unable to reload the %s, the previous one is used", r.name)
+		return r.value
 	}
-	logrus.Info("TLS certificate reloaded")
-	return r.certificate, nil
+	r.value = value
+	logrus.Infof("%s reloaded", r.name)
+	return r.value
 }
 
-func (r *certificateReloader) stat() (os.FileInfo, os.FileInfo, error) {
-	certInfo, err := os.Stat(r.certFile)
-	if err != nil {
-		return nil, nil, err
+func (r *fileReloader[T]) stat() ([]os.FileInfo, error) {
+	infos := make([]os.FileInfo, 0, len(r.files))
+	for _, file := range r.files {
+		info, err := os.Stat(file)
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, info)
 	}
-	keyInfo, err := os.Stat(r.keyFile)
-	if err != nil {
-		return nil, nil, err
-	}
-	return certInfo, keyInfo, nil
+	return infos, nil
 }
 
-func (r *certificateReloader) load() error {
-	certificate, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
-	if err != nil {
-		return err
-	}
-	r.certificate = &certificate
-	return nil
+// newCertificateReloader provides the certificate used by the HTTPS server, reloaded when the files change.
+func newCertificateReloader(certFile, keyFile string) (*fileReloader[*tls.Certificate], error) {
+	return newFileReloader("TLS certificate", func() (*tls.Certificate, error) {
+		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, err
+		}
+		return &certificate, nil
+	}, certFile, keyFile)
+}
+
+// newClientCAReloader provides the CA certificates used to verify the client certificates (mTLS), reloaded when the
+// file changes.
+func newClientCAReloader(caFile string) (*fileReloader[*x509.CertPool], error) {
+	return newFileReloader("TLS client CA", func() (*x509.CertPool, error) {
+		caPEM, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, err
+		}
+		clientCAs := x509.NewCertPool()
+		if !clientCAs.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("no certificate found in %s", caFile)
+		}
+		return clientCAs, nil
+	}, caFile)
 }
 
 // isSameFile tells if the file described by newInfo is the one described by oldInfo and if it was not modified since.

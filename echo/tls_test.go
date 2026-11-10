@@ -35,6 +35,7 @@ import (
 
 // generateCertificate returns a self-signed certificate for 127.0.0.1 and its key, both PEM encoded.
 // The serial number is used to identify the certificate served.
+// It can be used by a server or by a client (mTLS), and trusted directly as the client CA, as it is self-signed.
 func generateCertificate(t *testing.T, serialNumber int64) ([]byte, []byte) {
 	t.Helper()
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -44,7 +45,7 @@ func generateCertificate(t *testing.T, serialNumber int64) ([]byte, []byte) {
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
@@ -80,11 +81,9 @@ func writeCertificate(t *testing.T, dir string, serialNumber int64) (string, str
 	return certFile, keyFile
 }
 
-func servedSerialNumber(t *testing.T, r *certificateReloader) int64 {
+func servedSerialNumber(t *testing.T, r *fileReloader[*tls.Certificate]) int64 {
 	t.Helper()
-	certificate, err := r.GetCertificate(&tls.ClientHelloInfo{})
-	require.NoError(t, err)
-	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	leaf, err := x509.ParseCertificate(r.get().Certificate[0])
 	require.NoError(t, err)
 	return leaf.SerialNumber.Int64()
 }
@@ -170,4 +169,15 @@ func TestCertificateReloader_GetCertificate(t *testing.T) {
 	// The files are back: they are loaded again.
 	writeCertificate(t, dir, 5)
 	assert.Equal(t, int64(5), servedSerialNumber(t, r))
+}
+
+func TestNewClientCAReloader(t *testing.T) {
+	dir := t.TempDir()
+	notPEMFile := filepath.Join(dir, "ca.txt")
+	replaceFile(t, notPEMFile, []byte("not a certificate"))
+
+	_, err := newClientCAReloader(filepath.Join(dir, "missing.crt"))
+	assert.ErrorContains(t, err, "no such file or directory")
+	_, err = newClientCAReloader(notPEMFile)
+	assert.ErrorContains(t, err, "no certificate found in "+notPEMFile)
 }
