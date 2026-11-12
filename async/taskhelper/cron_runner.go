@@ -78,7 +78,10 @@ func (r *cronRunner) cron(ctx context.Context, cancelFunc context.CancelFunc) {
 	now := time.Now()
 	next := r.schedule.Next(now)
 	for {
-		timer := time.NewTimer(next.Sub(now))
+		// After an execution, next is computed from the moment it started, so the timer is armed with the time left until this date.
+		// That way, the time spent executing the task doesn't delay the next execution.
+		// If the execution took longer than that, the next date has already passed, and the task is executed again right away.
+		timer := time.NewTimer(time.Until(next))
 		for {
 			select {
 			case now = <-timer.C:

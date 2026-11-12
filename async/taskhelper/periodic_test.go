@@ -16,6 +16,8 @@ package taskhelper
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,6 +77,72 @@ func TestCron_ExecutedAgainAfterAnError(t *testing.T) {
 	runUntil(t, helper, func() bool {
 		return task.calls.Load() >= 2
 	})
+}
+
+// slowTask takes `duration` to execute, and records when each execution starts.
+type slowTask struct {
+	async.SimpleTask
+	duration time.Duration
+	mutex    sync.Mutex
+	starts   []time.Time
+}
+
+func (s *slowTask) String() string {
+	return "slow task"
+}
+
+func (s *slowTask) Execute(ctx context.Context, _ context.CancelFunc) error {
+	s.mutex.Lock()
+	s.starts = append(s.starts, time.Now())
+	s.mutex.Unlock()
+	select {
+	case <-time.After(s.duration):
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+func (s *slowTask) executionStarts() []time.Time {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return slices.Clone(s.starts)
+}
+
+func TestCron_ExecutionTimeDoesNotDelayTheNextExecution(t *testing.T) {
+	tests := []struct {
+		name     string
+		duration time.Duration
+		// maxGap is the maximum time expected between the start of two executions.
+		// Without taking the execution time into account, the gap would be about the execution time plus one second.
+		maxGap time.Duration
+	}{
+		{
+			// The task is executed every second.
+			name:     "execution shorter than the schedule",
+			duration: 700 * time.Millisecond,
+			maxGap:   1300 * time.Millisecond,
+		},
+		{
+			// The next date has already passed when the execution ends, so the task is executed again right away.
+			name:     "execution longer than the schedule",
+			duration: 1500 * time.Millisecond,
+			maxGap:   1800 * time.Millisecond,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &slowTask{duration: tt.duration}
+			helper, err := NewCron(task, "@every 1s")
+			require.NoError(t, err)
+			runUntil(t, helper, func() bool {
+				return len(task.executionStarts()) >= 3
+			})
+			starts := task.executionStarts()
+			for i := 1; i < len(starts); i++ {
+				assert.Less(t, starts[i].Sub(starts[i-1]), tt.maxGap, "execution %d started too late", i+1)
+			}
+		})
+	}
 }
 
 func TestNewCron_Schedule(t *testing.T) {
