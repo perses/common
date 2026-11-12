@@ -59,6 +59,8 @@ package config
 import (
 	"bytes"
 	"crypto/sha1"
+	"errors"
+	"io"
 	"os"
 	"reflect"
 
@@ -244,7 +246,12 @@ func (c *configResolver[T]) read(config *T) error {
 	}
 	d := yaml.NewDecoder(bytes.NewReader(data))
 	d.KnownFields(c.strict)
-	return d.Decode(config)
+	// The decoder returns io.EOF when there is no YAML document in the data (only comments or blank lines).
+	// It is the same as an empty config, which can be entirely set from environment.
+	if err = d.Decode(config); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
 
 // unmarshalEnv overrides the config with the environment variables.

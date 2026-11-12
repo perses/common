@@ -216,3 +216,43 @@ func TestResolveImpl_WatchSliceConfigShouldApplyChanges(t *testing.T) {
 		assert.Equal(c, Config{3, 4, 5}, received[0][:3])
 	}, waitFor, tick)
 }
+
+func TestResolveImpl_ConfigWithoutContent(t *testing.T) {
+	type Config struct {
+		Name string `yaml:"name"`
+	}
+	testSuite := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty", content: ""},
+		{name: "blank lines", content: "\n  \n"},
+		{name: "only comments", content: "# name: foo\n# another comment\n"},
+		{name: "empty document", content: "---\n"},
+	}
+	for _, test := range testSuite {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("NO_CONTENT_NAME", "from-env")
+
+			configFile := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(configFile, []byte(test.content), 0600))
+			fromFile := Config{}
+			require.NoError(t, NewResolver[Config]().SetEnvPrefix("NO_CONTENT").SetConfigFile(configFile).Resolve(&fromFile).Verify())
+			assert.Equal(t, "from-env", fromFile.Name)
+
+			fromData := Config{}
+			require.NoError(t, NewResolver[Config]().SetEnvPrefix("NO_CONTENT").SetConfigData([]byte(test.content)).Resolve(&fromData).Verify())
+			assert.Equal(t, "from-env", fromData.Name)
+		})
+	}
+}
+
+func TestResolveImpl_InvalidConfigIsStillRejected(t *testing.T) {
+	type Config struct {
+		Name string `yaml:"name"`
+	}
+	for _, content := range []string{"name: [", "unknown: field\n"} {
+		c := Config{}
+		assert.Error(t, NewResolver[Config]().SetConfigData([]byte(content)).Resolve(&c).Verify(), content)
+	}
+}

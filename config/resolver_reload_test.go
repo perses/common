@@ -84,3 +84,30 @@ func TestResolveImpl_WatchConfigShouldResolveAndVerifyTheNewConfig(t *testing.T)
 		assert.Equal(t, "fromenv", c.Secret)
 	}
 }
+
+func TestResolveImpl_WatchConfigWithoutContent(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("level: debug\n"), 0600))
+	t.Setenv("RELOAD_SECRET", "fromenv")
+
+	received := make(chan reloadConfig, 1)
+	var config reloadConfig
+	err := NewResolver[reloadConfig]().
+		SetEnvPrefix("RELOAD").
+		SetConfigFile(configFile).
+		AddChangeCallback(func(newConfig *reloadConfig) {
+			received <- *newConfig
+		}).
+		Resolve(&config).
+		Verify()
+	require.NoError(t, err)
+
+	// A file with only comments is resolved like an empty one, instead of being reported as a file that cannot be parsed.
+	require.NoError(t, os.WriteFile(configFile, []byte("# level: debug\n"), 0600))
+	select {
+	case newConfig := <-received:
+		assert.Equal(t, reloadConfig{Secret: "fromenv", Port: 8080}, newConfig)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the callback has not been called")
+	}
+}
