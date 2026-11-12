@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flc1125/go-cron/v4"
 	"github.com/perses/common/async"
 	"github.com/sirupsen/logrus"
 	logrusTest "github.com/sirupsen/logrus/hooks/test"
@@ -169,6 +170,45 @@ func TestNewCron_Schedule(t *testing.T) {
 			assert.NotNil(t, helper)
 		})
 	}
+}
+
+func TestCron_StopsWhenNoNextExecutionDate(t *testing.T) {
+	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	t.Cleanup(func() {
+		logrus.StandardLogger().ReplaceHooks(origHooks)
+	})
+	hook := logrusTest.NewLocal(logrus.StandardLogger())
+
+	// A schedule that never matches any date: NewCron rejects it, so the runner
+	// is built directly to simulate the case where Next turns to zero after a
+	// firing (e.g. a leap-day schedule past its last match within five years).
+	sch, err := cron.ParseStandard("0 0 31 2 *")
+	require.NoError(t, err)
+	task := &failingTask{}
+	helper := &cronRunner{
+		schedule:     sch,
+		task:         task,
+		isSimpleTask: true,
+		done:         make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	Run(ctx, cancel, helper)
+	select {
+	case <-helper.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runner has not stopped")
+	}
+	// The task is never executed: without the guard it would run in a busy loop.
+	assert.Equal(t, int32(0), task.calls.Load())
+	// The stop is reported as an error.
+	found := false
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == logrus.ErrorLevel {
+			found = true
+		}
+	}
+	assert.True(t, found, "an error should be logged when the runner stops")
 }
 
 func TestNew_ReturnTheExecuteError(t *testing.T) {
