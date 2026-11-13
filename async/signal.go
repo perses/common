@@ -26,6 +26,10 @@ type signalListener struct {
 	signals []os.Signal
 }
 
+// NewSignalListener returns a task that cancels the context shared by every task when one of the given signals is received.
+// It handles only the first signal: once it is received (or once the context is done), the signals are not caught anymore.
+// So, while the application is gracefully stopping, another signal stops it right away (like a second Ctrl+C), unless
+// another part of the program catches it as well.
 func NewSignalListener(signals ...os.Signal) SimpleTask {
 	return &signalListener{
 		signals: signals,
@@ -39,6 +43,9 @@ func (s *signalListener) String() string {
 func (s *signalListener) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
 	sigChannel := make(chan os.Signal, 1)
 	signal.Notify(sigChannel, s.signals...)
+	// Without it, the signals would be caught by sigChannel until the process exits, and silently ignored.
+	// The graceful stop couldn't be interrupted anymore, even when it is stuck.
+	defer signal.Stop(sigChannel)
 	select {
 	case sig := <-sigChannel:
 		cancelFunc()
