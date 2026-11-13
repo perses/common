@@ -84,3 +84,37 @@ func TestResolveImpl_WatchConfigShouldResolveAndVerifyTheNewConfig(t *testing.T)
 		assert.Equal(t, "fromenv", c.Secret)
 	}
 }
+
+func TestResolveImpl_WatchConfigShouldIgnoreTheUnknownFieldsWhenNotStrict(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("level: info\n"), 0600))
+
+	var mutex sync.Mutex
+	var received []reloadConfig
+	receivedConfigs := func() []reloadConfig {
+		mutex.Lock()
+		defer mutex.Unlock()
+		return slices.Clone(received)
+	}
+
+	var config reloadConfig
+	err := NewResolver[reloadConfig]().
+		SetEnvPrefix("RELOAD_NOT_STRICT").
+		Strict(false).
+		SetConfigFile(configFile).
+		AddChangeCallback(func(newConfig *reloadConfig) {
+			mutex.Lock()
+			defer mutex.Unlock()
+			received = append(received, *newConfig)
+		}).
+		Resolve(&config).
+		Verify()
+	require.NoError(t, err)
+
+	// The config file read again is not strict either.
+	require.NoError(t, os.WriteFile(configFile, []byte("unknown: field\nlevel: debug\n"), 0600))
+	expected := reloadConfig{Level: "debug", Port: 8080}
+	assert.Eventually(t, func() bool {
+		return slices.Contains(receivedConfigs(), expected)
+	}, 5*time.Second, 10*time.Millisecond)
+}
