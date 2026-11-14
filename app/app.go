@@ -18,25 +18,34 @@
 // In that case you can use the following example:
 //
 //	package main
+//
 //	import (
-//	  "github.com/perses/commun/app"
+//	  "flag"
+//
+//	  "github.com/perses/common/app"
 //	)
+//
 //	func main() {
+//	  // register the flags configuring the logs and the HTTP server, then parse them
+//	  app.InitFlag()
+//	  flag.Parse()
 //	  // create your api
 //	  api := newAPI()
 //	  // then use the app package to start it properly
-//	  runner := app.NewRunner().WithDefaultHTTPServer("your_api_name")
+//	  runner := app.NewRunner().WithDefaultLogrusBuilder().WithDefaultHTTPServer("your_api_name")
 //	  runner.HTTPServerBuilder().APIRegistration(api)
 //	  // start the application
 //	  runner.Start()
 //	}
 //
-// You can also add custom tasks to the runner using WithTasks :
+// You can also add custom tasks to the runner using WithTasks, WithTimerTasks and WithCronTasks:
 //
 //	// Run all the tasks
 //	runner := app.NewRunner().
 //	    WithTasks(myTask1, myTask2).
-//	    WithDefaultServerTask(prometheusNamespace)
+//	    WithTimerTasks(30*time.Second, myPeriodicTask).
+//	    WithCronTasks("0 2 * * *", myNightlyTask).
+//	    WithDefaultHTTPServer(prometheusNamespace)
 //	runner.Start()
 package app
 
@@ -151,6 +160,8 @@ func (r *Runner) WithTimerTasks(duration time.Duration, t ...any) *Runner {
 	return r
 }
 
+// WithCronTasks is the way to add different tasks that will be executed according to the cron schedule.
+// See taskhelper.NewCron for the syntax of the schedule.
 func (r *Runner) WithCronTasks(cronSchedule string, t ...any) *Runner {
 	for _, ts := range t {
 		r.cronTasks = append(r.cronTasks, cronTask{
@@ -161,11 +172,15 @@ func (r *Runner) WithCronTasks(cronSchedule string, t ...any) *Runner {
 	return r
 }
 
+// WithTaskHelpers is the way to add tasks already wrapped in a taskhelper.Helper. They are started with the other tasks.
 func (r *Runner) WithTaskHelpers(t ...taskhelper.Helper) *Runner {
 	r.helpers = append(r.helpers, t...)
 	return r
 }
 
+// WithDefaultHTTPServer is here to create a default HTTP server with already the metrics API setup.
+// The metrics are registered in and gathered from the default Prometheus registry.
+// To use another registry, use WithDefaultHTTPServerAndPrometheusRegisterer.
 func (r *Runner) WithDefaultHTTPServer(metricNamespace string) *Runner {
 	return r.WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace, prometheus.DefaultRegisterer, prometheus.DefaultGatherer)
 }
@@ -183,6 +198,9 @@ func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace st
 	return r
 }
 
+// HTTPServerBuilder returns the Builder of the HTTP server, to register your APIs and your middlewares for example.
+// If no HTTP server has been created with WithDefaultHTTPServer or WithDefaultHTTPServerAndPrometheusRegisterer,
+// it creates one without any API. The HTTP server is only started when one has been created.
 func (r *Runner) HTTPServerBuilder() *echo.Builder {
 	if r.serverBuilder == nil {
 		r.serverBuilder = echo.NewBuilder()
@@ -190,6 +208,9 @@ func (r *Runner) HTTPServerBuilder() *echo.Builder {
 	return r.serverBuilder
 }
 
+// OTeLProviderBuilder returns the Builder of the OpenTelemetry tracer provider, and creates it if it doesn't exist yet.
+// Once this Builder exists, the runner builds the provider with it, registers it globally when it starts, and shuts it
+// down when it stops. A resource or a provider must be set on the Builder, otherwise the runner fails to start.
 func (r *Runner) OTeLProviderBuilder() *commonOtel.Builder {
 	if r.providerBuilder == nil {
 		r.providerBuilder = commonOtel.NewBuilder()
@@ -197,6 +218,9 @@ func (r *Runner) OTeLProviderBuilder() *commonOtel.Builder {
 	return r.providerBuilder
 }
 
+// LogrusBuilder returns the Builder of the logrus configuration, and creates it if it doesn't exist yet.
+// The global logrus logger is configured with it when the runner starts.
+// The settings that are not set on the Builder come from the flags (see logrus.InitFlag).
 func (r *Runner) LogrusBuilder() *commonLogrus.Builder {
 	if r.logrusBuilder == nil {
 		r.logrusBuilder = commonLogrus.NewBuilder()
