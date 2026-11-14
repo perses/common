@@ -30,30 +30,42 @@
 //
 // Example:
 //
-//	  import (
-//	          "fmt"
+//	import (
+//		"fmt"
 //
-//	          "github.com/perses/common/config"
-//	  )
+//		"github.com/perses/common/config"
+//	)
 //
-//	   type Config struct {
-//		    Etcd *EtcdConfig `yaml:"etcd"`
-//	   }
+//	type DatabaseConfig struct {
+//		URL      string `yaml:"url"`
+//		MaxConns int    `yaml:"max_conns"`
+//	}
 //
-//	   func (c *Config) Verify() error {
-//	     if c.EtcdConfig == nil {
-//	       return fmt.Errorf("etcd config cannot be empty")
-//	     }
-//	   }
+//	// Verify checks the config and sets the default values. It is called even if the field database is not in the config file.
+//	func (c *DatabaseConfig) Verify() error {
+//		if len(c.URL) == 0 {
+//			return fmt.Errorf("database.url cannot be empty")
+//		}
+//		if c.MaxConns == 0 {
+//			c.MaxConns = 10
+//		}
+//		return nil
+//	}
 //
-//	   func Resolve(configFile string) (Config, error) {
-//		    c := Config{}
-//		    return c, config.NewResolver().
-//			  SetConfigFile(configFile).
-//			  SetEnvPrefix("PERSES").
-//			  Resolve(&c).
-//			  Verify()
-//	   }
+//	type Config struct {
+//		Database DatabaseConfig `yaml:"database"`
+//	}
+//
+//	// Resolve reads the config file, then overrides it with the environment variables, like PERSES_DATABASE_URL.
+//	func Resolve(configFile string) (Config, error) {
+//		c := Config{}
+//		err := config.NewResolver[Config]().
+//			SetConfigFile(configFile).
+//			SetEnvPrefix("PERSES").
+//			Resolve(&c).
+//			Verify()
+//		return c, err
+//	}
 package config
 
 import (

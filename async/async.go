@@ -17,20 +17,20 @@
 // It should be used when you need to run multiple asynchronous task and wait for each of them to finish.
 // Example:
 //
-//	 func doneAsync() (int, error) {
-//			// asynchronous task
-//			time.Sleep(3 * time.Second)
-//			return 1, nil
-//		}
+//	func doneAsync() (int, error) {
+//		// asynchronous task
+//		time.Sleep(3 * time.Second)
+//		return 1, nil
+//	}
 //
-//	 func synchronousTask() {
-//	 	next := async.Async(doneAsync)
+//	func synchronousTask() {
+//		next := async.Async(doneAsync)
 //		// do some other stuff
-//	 	// then wait for the end of the asynchronous task and get back the result
-//	 	result, err := next.Await()
-//	 	// do something with the result
-//		fmt.Println("got",result,"err",err)
-//	 }
+//		// then wait for the end of the asynchronous task and get back the result
+//		result, err := next.Await()
+//		// do something with the result
+//		fmt.Println("got", result, "err", err)
+//	}
 //
 // It is useful to use this implementation when you want to paralyze quickly some short function like paralyzing multiple HTTP requests.
 // You definitely won't use this implementation if you want to create a cron or a long task. Instead, you should implement the interface SimpleTask or Task for doing that.
@@ -50,36 +50,50 @@
 //
 // The Task are designed to work with the app.Runner which will create the root context and the cancel function. Basically you don't have to take care how to run the Task or how to create and share the same context.
 //
-// Example:
+// Examples:
 //
-//  1. How to implement a Task that would run periodically
-//     type myPeriodicTask struct {
-//     SimpleTask
-//     }
-//     func (t *myPeriodicTask) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
-//     // since my task is quite simple, and it will be called periodically, I don't need to listen the context. It is handled by the caller. (For more detail, see taskhelper.Start
-//     logrus.Info("I'm alive!")
-//     return nil
-//     }
-//     // like that the method Execute of myPeriodicTask will be called periodically every 30 seconds.
-//     app.NewRunner().WithCronTasks(30*time.Second, &myPeriodicTask).Start()
+// How to implement a Task that would run periodically:
 //
-//  2. How to implement a Task that would run infinitely
-//     type myInfiniteTask struct {
-//     SimpleTask
-//     }
-//     func (t *myInfiniteTask) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
-//     for {
-//     select {
-//     case <-ctx.Done():
-//     // the context is canceled, I need to stop my task
-//     return nil
-//     default:
-//     // my business code to run
-//     }
-//     return nil
-//     }
-//     app.NewRunner().WithTasks(&myInfiniteTask).Start()
+//	type myPeriodicTask struct{}
+//
+//	func (t *myPeriodicTask) String() string {
+//		return "my periodic task"
+//	}
+//
+//	func (t *myPeriodicTask) Execute(_ context.Context, _ context.CancelFunc) error {
+//		// since my task is quite simple, and it will be called periodically, I don't need to listen the context.
+//		// It is handled by the caller (for more detail, see taskhelper.NewTick).
+//		logrus.Info("I'm alive!")
+//		return nil
+//	}
+//
+//	// like that the method Execute of myPeriodicTask will be called periodically every 30 seconds.
+//	app.NewRunner().WithTimerTasks(30*time.Second, &myPeriodicTask{}).Start()
+//
+// How to implement a Task that would run infinitely:
+//
+//	type myInfiniteTask struct {
+//		messages <-chan string
+//	}
+//
+//	func (t *myInfiniteTask) String() string {
+//		return "my infinite task"
+//	}
+//
+//	func (t *myInfiniteTask) Execute(ctx context.Context, _ context.CancelFunc) error {
+//		for {
+//			select {
+//			case <-ctx.Done():
+//				// the context is canceled, I need to stop my task
+//				return nil
+//			case msg := <-t.messages:
+//				// my business code to run
+//				logrus.Infof("message received: %s", msg)
+//			}
+//		}
+//	}
+//
+//	app.NewRunner().WithTasks(&myInfiniteTask{messages: messages}).Start()
 package async
 
 import "context"

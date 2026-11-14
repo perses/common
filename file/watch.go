@@ -35,10 +35,9 @@ const debounceDelay = 100 * time.Millisecond
 // The file is watched until the end of the process. Use WatchWithContext to stop watching it.
 // Example:
 //
-//		file.Watch("/tmp/test.txt", func() {
-//			fmt.Println("File created or changed")
-//		}
-//	)
+//	err := file.Watch("/tmp/test.txt", func() {
+//		fmt.Println("File created or changed")
+//	})
 func Watch(filename string, callback func()) error {
 	return WatchWithContext(context.Background(), filename, callback)
 }

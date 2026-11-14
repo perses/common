@@ -25,6 +25,10 @@
 //
 // - Register a Middleware.
 //
+// - Serve HTTPS when the flags --web.tls-cert-file and --web.tls-key-file are set (see InitFlag).
+// The certificate is reloaded when the files change. The other flags --web.tls-* configure the TLS versions, the cipher
+// suites, the curves and the client certificates verification (mTLS).
+//
 // # Usage
 //
 // Instantiate a simple server task :
@@ -32,9 +36,8 @@
 //	package my_package
 //
 //	import (
-//	    "context"
-//
 //	    "github.com/perses/common/echo"
+//	    "github.com/prometheus/client_golang/prometheus"
 //	)
 //
 //	const (
@@ -44,10 +47,12 @@
 //	)
 //
 //	func main() {
-//	    serverTask, err := echo.NewBuilder(addr).
-//	            APIRegistration(echo.NewMetricsAPI(true)).
-//	            MetricNamespace(metricNamespace).
-//	            Build()
+//	    builder := echo.NewBuilder().
+//	            APIRegistration(echo.NewMetricsAPI(true, prometheus.DefaultRegisterer, prometheus.DefaultGatherer)).
+//	            MetricNamespace(metricNamespace)
+//	    // Without it, the address is the one of the flag --web.listen-address (see InitFlag), or ":8080".
+//	    builder.ListenAddress(addr)
+//	    serverTask, err := builder.Build()
 //	}
 package echo
 
