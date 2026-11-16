@@ -23,6 +23,7 @@
 //  1. A good practice is to prefix your environment variable by the name of your application.
 //  2. The config file is not mandatory, you can manage all you configuration using the environment variable.
 //  3. The config by environment is always overriding the config by file.
+//  4. By default, an unknown field in the config is an error. Use Resolver.Strict to ignore the unknown fields.
 //
 // The Resolver at the end returns an object that implements the interface Validator.
 // Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
@@ -158,6 +159,7 @@ type Resolver[T any] interface {
 	SetEnvPrefix(prefix string) Resolver[T]
 	SetConfigFile(filename string) Resolver[T]
 	SetConfigData(data []byte) Resolver[T]
+	Strict(isStrict bool) Resolver[T]
 	AddChangeCallback(func(*T)) Resolver[T]
 	Resolve(config *T) Validator
 }
@@ -178,7 +180,15 @@ func NewResolver[T any]() Resolver[T] {
 	}
 }
 
-// Strict is set to true to fail if there is an unknown field in the config file (true by default)
+// Strict tells if an unknown field in the config (file or data) is an error (true by default).
+// Set it to false to ignore the unknown fields, for example to declare the YAML anchors in a dedicated field:
+//
+//	x-defaults: &defaults
+//	  timeout: 30s
+//	database:
+//	  <<: *defaults
+//
+// It applies to the config file read again when it changes as well.
 func (c *configResolver[T]) Strict(isStrict bool) Resolver[T] {
 	c.strict = isStrict
 	return c
