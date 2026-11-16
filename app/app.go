@@ -217,6 +217,8 @@ func (r *Runner) WithDefaultLogrusBuilder() *Runner {
 // Start will start the application. It is a blocking method and will give back the end once every tasks handled are done.
 // If the application is stopped by a task that failed (like the HTTP server that cannot listen on its address),
 // the process exits with the status code 1 once every task is stopped.
+// The application is gracefully stopped when it receives SIGINT or SIGTERM. If another one is received while it is
+// stopping (like a second Ctrl+C), the process is killed right away.
 func (r *Runner) Start() {
 	// build the logrus config if exists
 	if r.logrusBuilder != nil {
