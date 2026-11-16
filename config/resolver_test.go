@@ -107,6 +107,34 @@ func TestResolveImpl_VerifyMapValues(t *testing.T) {
 	assert.EqualError(t, NewResolver[Config]().SetConfigData([]byte("providers:\n  a:\n    port: 80\n")).Resolve(&c).Verify(), "name cannot be empty")
 }
 
+type strictConfig struct {
+	Database struct {
+		Timeout string `yaml:"timeout"`
+		Name    string `yaml:"name"`
+	} `yaml:"database"`
+}
+
+func TestResolveImpl_Strict(t *testing.T) {
+	// The unknown field x-defaults is only used to declare a YAML anchor.
+	data := []byte("x-defaults: &defaults\n  timeout: 30s\ndatabase:\n  <<: *defaults\n  name: perses\n")
+
+	t.Run("an unknown field is an error by default", func(t *testing.T) {
+		var c strictConfig
+		err := NewResolver[strictConfig]().SetEnvPrefix("STRICT_TEST").SetConfigData(data).Resolve(&c).Verify()
+		assert.ErrorContains(t, err, "field x-defaults not found")
+	})
+
+	t.Run("an unknown field is ignored when the strict mode is disabled", func(t *testing.T) {
+		configFile := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(configFile, data, 0600))
+		var c strictConfig
+		err := NewResolver[strictConfig]().SetEnvPrefix("STRICT_TEST").Strict(false).SetConfigFile(configFile).Resolve(&c).Verify()
+		require.NoError(t, err)
+		assert.Equal(t, "30s", c.Database.Timeout)
+		assert.Equal(t, "perses", c.Database.Name)
+	})
+}
+
 func TestResolveImpl_EmptyEnvPrefix(t *testing.T) {
 	type Config struct {
 		FieldByEnv1 string `yaml:"fieldbyenv1"`
