@@ -29,32 +29,8 @@
 // Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
 // The object returned by the Resolver will loop other different structs that are parts of the config (including the elements of a slice or an array, and the values of a map) and execute the method Verify if implemented.
 //
-// Example:
-//
-//	  import (
-//	          "fmt"
-//
-//	          "github.com/perses/common/config"
-//	  )
-//
-//	   type Config struct {
-//		    Etcd *EtcdConfig `yaml:"etcd"`
-//	   }
-//
-//	   func (c *Config) Verify() error {
-//	     if c.EtcdConfig == nil {
-//	       return fmt.Errorf("etcd config cannot be empty")
-//	     }
-//	   }
-//
-//	   func Resolve(configFile string) (Config, error) {
-//		    c := Config{}
-//		    return c, config.NewResolver().
-//			  SetConfigFile(configFile).
-//			  SetEnvPrefix("PERSES").
-//			  Resolve(&c).
-//			  Verify()
-//	   }
+// See ExampleNewResolver for a complete example: Verify checks a value and sets a default one on a nested struct,
+// and an environment variable like PERSES_DATABASE_URL overrides the config file.
 package config
 
 import (

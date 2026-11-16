@@ -73,13 +73,16 @@ func NewTick(task any, interval time.Duration) (Helper, error) {
 // It returns an error if cronSchedule is invalid, or if it never matches any date (like "0 0 31 2 *").
 // cronSchedule is following the standard syntax described here: https://en.wikipedia.org/wiki/Cron.
 // It also supports the predefined scheduling definitions:
-// - @yearly (or @annually) | Run once a year, midnight, Jan. 1st        | 0 0 0 1 1 *
-// - @monthly               | Run once a month, midnight, first of month | 0 0 0 1 * *
-// - @weekly                | Run once a week, midnight between Sat/Sun  | 0 0 0 * * 0
-// - @daily (or @midnight)  | Run once a day, midnight                   | 0 0 0 * * *
-// - @hourly                | Run once an hour, beginning of hour        | 0 0 * * * *
 //
-// We are directly relying on what the library https://pkg.go.dev/github.com/robfig/cron is supporting.
+//	@yearly (or @annually) | Run once a year, midnight, Jan. 1st        | 0 0 1 1 *
+//	@monthly               | Run once a month, midnight, first of month | 0 0 1 * *
+//	@weekly                | Run once a week, midnight between Sat/Sun  | 0 0 * * 0
+//	@daily (or @midnight)  | Run once a day, midnight                   | 0 0 * * *
+//	@hourly                | Run once an hour, beginning of hour        | 0 * * * *
+//	@every <duration>      | Run at a fixed interval, like "@every 1h30m" (see time.ParseDuration)
+//
+// We are directly relying on what the library https://pkg.go.dev/github.com/flc1125/go-cron/v4 (a fork of
+// https://github.com/robfig/cron) is supporting with cron.ParseStandard.
 func NewCron(task any, cronSchedule string) (Helper, error) {
 	sch, err := cron.ParseStandard(cronSchedule)
 	if err != nil {

@@ -32,6 +32,11 @@ func InitTelemetryPathFlag() {
 	flag.StringVar(&telemetryPath, "web.telemetry-path", defaultTelemetryPath, "Path under which to expose metrics.")
 }
 
+// NewMetricsAPI returns the API exposing the metrics collected by the gatherer, under the path set by the flag
+// --web.telemetry-path ("/metrics" by default, see InitTelemetryPathFlag).
+// The metrics about the requests of this endpoint are registered with the registerer (the default Prometheus registerer
+// if nil). Set disableCompression to true when the responses are already compressed by a middleware, like the gzip one
+// used by default by the Builder.
 func NewMetricsAPI(disableCompression bool, r prometheus.Registerer, gatherer prometheus.Gatherer) Register {
 	return &metrics{
 		disableCompression: disableCompression,
@@ -40,7 +45,7 @@ func NewMetricsAPI(disableCompression bool, r prometheus.Registerer, gatherer pr
 }
 
 // metrics is a struct than handles the endpoint /metrics
-// It should be used through the Builder like that: Builder.APIRegistration(NewMetricsAPI(true))
+// It should be used through the Builder like that: Builder.APIRegistration(NewMetricsAPI(true, registerer, gatherer))
 type metrics struct {
 	Register
 	// disableCompression should be used if you are using the gzip middleware at a higher level (meaning that the endpoint /metrics is going to be compressed by the middleware).
