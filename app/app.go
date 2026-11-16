@@ -15,38 +15,11 @@
 // This should be used in the main package only.
 //
 // A quite straightforward usage of this package is when you are implementing an HTTP API and want to expose it.
-// In that case you can use the following example:
+// In that case you can use the following example (see ExampleNewRunner): register the flags with InitFlag and parse them,
+// create the Runner with WithDefaultLogrusBuilder and WithDefaultHTTPServer, register your API on HTTPServerBuilder,
+// then call Start.
 //
-//	package main
-//
-//	import (
-//	  "flag"
-//
-//	  "github.com/perses/common/app"
-//	)
-//
-//	func main() {
-//	  // register the flags configuring the logs and the HTTP server, then parse them
-//	  app.InitFlag()
-//	  flag.Parse()
-//	  // create your api
-//	  api := newAPI()
-//	  // then use the app package to start it properly
-//	  runner := app.NewRunner().WithDefaultLogrusBuilder().WithDefaultHTTPServer("your_api_name")
-//	  runner.HTTPServerBuilder().APIRegistration(api)
-//	  // start the application
-//	  runner.Start()
-//	}
-//
-// You can also add custom tasks to the runner using WithTasks, WithTimerTasks and WithCronTasks:
-//
-//	// Run all the tasks
-//	runner := app.NewRunner().
-//	    WithTasks(myTask1, myTask2).
-//	    WithTimerTasks(30*time.Second, myPeriodicTask).
-//	    WithCronTasks("0 2 * * *", myNightlyTask).
-//	    WithDefaultHTTPServer(prometheusNamespace)
-//	runner.Start()
+// You can also add custom tasks to the runner using WithTasks, WithTimerTasks and WithCronTasks.
 package app
 
 import (
@@ -94,6 +67,8 @@ type cronTask struct {
 	schedule string
 }
 
+// Runner starts the tasks of an application (like the HTTP server and the timer or cron tasks), and stops them
+// gracefully when one of them stops the application or when the process receives SIGINT or SIGTERM.
 type Runner struct {
 	// waitTimeout is the amount of time to wait before killing the application once it received a cancellation order.
 	waitTimeout time.Duration
@@ -118,6 +93,7 @@ type Runner struct {
 	bannerParameters []any
 }
 
+// NewRunner creates a Runner that waits up to 30s for the tasks to stop when the application stops (see SetTimeout).
 func NewRunner() *Runner {
 	return &Runner{
 		waitTimeout:      time.Second * 30,
@@ -200,7 +176,8 @@ func (r *Runner) WithDefaultHTTPServerAndPrometheusRegisterer(metricNamespace st
 
 // HTTPServerBuilder returns the Builder of the HTTP server, to register your APIs and your middlewares for example.
 // If no HTTP server has been created with WithDefaultHTTPServer or WithDefaultHTTPServerAndPrometheusRegisterer,
-// it creates one without any API. The HTTP server is only started when one has been created.
+// it creates one without any API (not even the metrics one). Once the Builder exists, the runner builds and starts
+// the HTTP server, so at least one API must be registered on it, otherwise the runner fails to start.
 func (r *Runner) HTTPServerBuilder() *echo.Builder {
 	if r.serverBuilder == nil {
 		r.serverBuilder = echo.NewBuilder()

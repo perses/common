@@ -29,44 +29,8 @@
 // Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
 // The object returned by the Resolver will loop other different structs that are parts of the config (including the elements of a slice or an array, and the values of a map) and execute the method Verify if implemented.
 //
-// Example:
-//
-//	import (
-//		"fmt"
-//
-//		"github.com/perses/common/config"
-//	)
-//
-//	type DatabaseConfig struct {
-//		URL      string `yaml:"url"`
-//		MaxConns int    `yaml:"max_conns"`
-//	}
-//
-//	// Verify checks the config and sets the default values. It is called even if the field database is not in the config file.
-//	func (c *DatabaseConfig) Verify() error {
-//		if len(c.URL) == 0 {
-//			return fmt.Errorf("database.url cannot be empty")
-//		}
-//		if c.MaxConns == 0 {
-//			c.MaxConns = 10
-//		}
-//		return nil
-//	}
-//
-//	type Config struct {
-//		Database DatabaseConfig `yaml:"database"`
-//	}
-//
-//	// Resolve reads the config file, then overrides it with the environment variables, like PERSES_DATABASE_URL.
-//	func Resolve(configFile string) (Config, error) {
-//		c := Config{}
-//		err := config.NewResolver[Config]().
-//			SetConfigFile(configFile).
-//			SetEnvPrefix("PERSES").
-//			Resolve(&c).
-//			Verify()
-//		return c, err
-//	}
+// See ExampleNewResolver for a complete example: Verify checks a value and sets a default one on a nested struct,
+// and an environment variable like PERSES_DATABASE_URL overrides the config file.
 package config
 
 import (

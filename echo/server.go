@@ -36,8 +36,10 @@
 //	package my_package
 //
 //	import (
+//	    "github.com/perses/common/app"
 //	    "github.com/perses/common/echo"
 //	    "github.com/prometheus/client_golang/prometheus"
+//	    "github.com/sirupsen/logrus"
 //	)
 //
 //	const (
@@ -53,6 +55,11 @@
 //	    // Without it, the address is the one of the flag --web.listen-address (see InitFlag), or ":8080".
 //	    builder.ListenAddress(addr)
 //	    serverTask, err := builder.Build()
+//	    if err != nil {
+//	        logrus.WithError(err).Fatal("unable to build the HTTP server")
+//	    }
+//	    // run the HTTP server until the process receives SIGINT or SIGTERM
+//	    app.NewRunner().WithTasks(serverTask).Start()
 //	}
 package echo
 

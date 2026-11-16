@@ -86,7 +86,11 @@
 //			case <-ctx.Done():
 //				// the context is canceled, I need to stop my task
 //				return nil
-//			case msg := <-t.messages:
+//			case msg, ok := <-t.messages:
+//				if !ok {
+//					// the channel is closed, there is no more message to process
+//					return nil
+//				}
 //				// my business code to run
 //				logrus.Infof("message received: %s", msg)
 //			}

@@ -33,11 +33,7 @@ const debounceDelay = 100 * time.Millisecond
 // When the file is a symlink (like a ConfigMap or a Secret mounted in a Kubernetes Pod), a change of its target is detected as well.
 // It relies on the events of the parent directory, which are all reported by inotify on Linux, but not always by kqueue (macOS, BSD).
 // The file is watched until the end of the process. Use WatchWithContext to stop watching it.
-// Example:
-//
-//	err := file.Watch("/tmp/test.txt", func() {
-//		fmt.Println("File created or changed")
-//	})
+// See ExampleWatch for an example.
 func Watch(filename string, callback func()) error {
 	return WatchWithContext(context.Background(), filename, callback)
 }
