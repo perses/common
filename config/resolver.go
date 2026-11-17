@@ -23,37 +23,14 @@
 //  1. A good practice is to prefix your environment variable by the name of your application.
 //  2. The config file is not mandatory, you can manage all you configuration using the environment variable.
 //  3. The config by environment is always overriding the config by file.
+//  4. By default, an unknown field in the config is an error. Use Resolver.Strict to ignore the unknown fields.
 //
 // The Resolver at the end returns an object that implements the interface Validator.
 // Each config/struct can implement this interface in order to provide a single way to verify the configuration and to set the default value.
-// The object returned by the Resolver will loop other different structs that are parts of the config and execute the method Verify if implemented.
+// The object returned by the Resolver will loop other different structs that are parts of the config (including the elements of a slice or an array, and the values of a map) and execute the method Verify if implemented.
 //
-// Example:
-//
-//	  import (
-//	          "fmt"
-//
-//	          "github.com/perses/common/config"
-//	  )
-//
-//	   type Config struct {
-//		    Etcd *EtcdConfig `yaml:"etcd"`
-//	   }
-//
-//	   func (c *Config) Verify() error {
-//	     if c.EtcdConfig == nil {
-//	       return fmt.Errorf("etcd config cannot be empty")
-//	     }
-//	   }
-//
-//	   func Resolve(configFile string) (Config, error) {
-//		    c := Config{}
-//		    return c, config.NewResolver().
-//			  SetConfigFile(configFile).
-//			  SetEnvPrefix("PERSES").
-//			  Resolve(&c).
-//			  Verify()
-//	   }
+// See ExampleNewResolver for a complete example: Verify checks a value and sets a default one on a nested struct,
+// and an environment variable like PERSES_DATABASE_URL overrides the config file.
 package config
 
 import (
@@ -123,11 +100,21 @@ func verifyRec(conf reflect.Value) error {
 		v = v.Elem()
 	}
 	switch v.Kind() {
-	case reflect.Slice:
+	case reflect.Slice, reflect.Array:
 		for i := 0; i < v.Len(); i++ {
 			if err := verifyRec(v.Index(i)); err != nil {
 				return err
 			}
+		}
+	case reflect.Map:
+		for iter := v.MapRange(); iter.Next(); {
+			// A map value cannot be set, so a copy is verified and then saved in the map, in case the method Verify() is setting some parameter.
+			value := reflect.New(v.Type().Elem()).Elem()
+			value.Set(iter.Value())
+			if err := verifyRec(value); err != nil {
+				return err
+			}
+			v.SetMapIndex(iter.Key(), value)
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
@@ -150,6 +137,7 @@ type Resolver[T any] interface {
 	SetEnvPrefix(prefix string) Resolver[T]
 	SetConfigFile(filename string) Resolver[T]
 	SetConfigData(data []byte) Resolver[T]
+	Strict(isStrict bool) Resolver[T]
 	AddChangeCallback(func(*T)) Resolver[T]
 	Resolve(config *T) Validator
 }
@@ -170,7 +158,15 @@ func NewResolver[T any]() Resolver[T] {
 	}
 }
 
-// Strict is set to true to fail if there is an unknown field in the config file (true by default)
+// Strict tells if an unknown field in the config (file or data) is an error (true by default).
+// Set it to false to ignore the unknown fields, for example to declare the YAML anchors in a dedicated field:
+//
+//	x-defaults: &defaults
+//	  timeout: 30s
+//	database:
+//	  <<: *defaults
+//
+// It applies to the config file read again when it changes as well.
 func (c *configResolver[T]) Strict(isStrict bool) Resolver[T] {
 	c.strict = isStrict
 	return c

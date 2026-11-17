@@ -16,10 +16,13 @@ package taskhelper
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/flc1125/go-cron/v4"
 	"github.com/perses/common/async"
 	"github.com/sirupsen/logrus"
 	logrusTest "github.com/sirupsen/logrus/hooks/test"
@@ -75,6 +78,137 @@ func TestCron_ExecutedAgainAfterAnError(t *testing.T) {
 	runUntil(t, helper, func() bool {
 		return task.calls.Load() >= 2
 	})
+}
+
+// slowTask takes `duration` to execute, and records when each execution starts.
+type slowTask struct {
+	async.SimpleTask
+	duration time.Duration
+	mutex    sync.Mutex
+	starts   []time.Time
+}
+
+func (s *slowTask) String() string {
+	return "slow task"
+}
+
+func (s *slowTask) Execute(ctx context.Context, _ context.CancelFunc) error {
+	s.mutex.Lock()
+	s.starts = append(s.starts, time.Now())
+	s.mutex.Unlock()
+	select {
+	case <-time.After(s.duration):
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+func (s *slowTask) executionStarts() []time.Time {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return slices.Clone(s.starts)
+}
+
+func TestCron_ExecutionTimeDoesNotDelayTheNextExecution(t *testing.T) {
+	tests := []struct {
+		name     string
+		duration time.Duration
+		// maxGap is the maximum time expected between the start of two executions.
+		// Without taking the execution time into account, the gap would be about the execution time plus one second.
+		maxGap time.Duration
+	}{
+		{
+			// The task is executed every second.
+			name:     "execution shorter than the schedule",
+			duration: 700 * time.Millisecond,
+			maxGap:   1300 * time.Millisecond,
+		},
+		{
+			// The next date has already passed when the execution ends, so the task is executed again right away.
+			name:     "execution longer than the schedule",
+			duration: 1500 * time.Millisecond,
+			maxGap:   1800 * time.Millisecond,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &slowTask{duration: tt.duration}
+			helper, err := NewCron(task, "@every 1s")
+			require.NoError(t, err)
+			runUntil(t, helper, func() bool {
+				return len(task.executionStarts()) >= 3
+			})
+			starts := task.executionStarts()
+			for i := 1; i < len(starts); i++ {
+				assert.Less(t, starts[i].Sub(starts[i-1]), tt.maxGap, "execution %d started too late", i+1)
+			}
+		})
+	}
+}
+
+func TestNewCron_Schedule(t *testing.T) {
+	testSuite := []struct {
+		name     string
+		schedule string
+		wantErr  string
+	}{
+		{name: "standard", schedule: "*/5 * * * *"},
+		{name: "descriptor", schedule: "@daily"},
+		{name: "interval", schedule: "@every 1s"},
+		{name: "leap day", schedule: "0 0 29 2 *"},
+		{name: "never matches", schedule: "0 0 31 2 *", wantErr: `the cron schedule "0 0 31 2 *" never matches any date`},
+	}
+	for _, test := range testSuite {
+		t.Run(test.name, func(t *testing.T) {
+			helper, err := NewCron(&failingTask{}, test.schedule)
+			if test.wantErr != "" {
+				assert.ErrorContains(t, err, test.wantErr)
+				assert.Nil(t, helper)
+				return
+			}
+			assert.NoError(t, err)
+			assert.NotNil(t, helper)
+		})
+	}
+}
+
+func TestCron_StopsWhenNoNextExecutionDate(t *testing.T) {
+	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	t.Cleanup(func() {
+		logrus.StandardLogger().ReplaceHooks(origHooks)
+	})
+	hook := logrusTest.NewLocal(logrus.StandardLogger())
+
+	// A schedule that never matches any date: NewCron rejects it, so the runner
+	// is built directly to simulate the case where Next turns to zero after a
+	// firing (e.g. a leap-day schedule past its last match within five years).
+	sch, err := cron.ParseStandard("0 0 31 2 *")
+	require.NoError(t, err)
+	task := &failingTask{}
+	helper := &cronRunner{
+		schedule:     sch,
+		task:         task,
+		isSimpleTask: true,
+		done:         make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	Run(ctx, cancel, helper)
+	select {
+	case <-helper.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the runner has not stopped")
+	}
+	// The task is never executed: without the guard it would run in a busy loop.
+	assert.Equal(t, int32(0), task.calls.Load())
+	// The stop is reported as an error.
+	found := false
+	for _, entry := range hook.AllEntries() {
+		if entry.Level == logrus.ErrorLevel {
+			found = true
+		}
+	}
+	assert.True(t, found, "an error should be logged when the runner stops")
 }
 
 func TestNew_ReturnTheExecuteError(t *testing.T) {

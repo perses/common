@@ -15,13 +15,19 @@ package echo
 
 import (
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
+	"io"
+	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	echoLib "github.com/labstack/echo/v4"
+	echoLib "github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	logrustest "github.com/sirupsen/logrus/hooks/test"
@@ -219,6 +225,268 @@ func TestParseCipherSuites(t *testing.T) {
 	}
 }
 
+func TestParseCurvePreferences(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		expected    []tls.CurveID
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:     "empty string returns nil",
+			input:    "",
+			expected: nil,
+		},
+		{
+			name:     "single valid curve",
+			input:    "X25519",
+			expected: []tls.CurveID{tls.X25519},
+		},
+		{
+			name:     "multiple valid curves",
+			input:    "CurveP256,CurveP384,CurveP521",
+			expected: []tls.CurveID{tls.CurveP256, tls.CurveP384, tls.CurveP521},
+		},
+		{
+			name:     "post-quantum key exchanges",
+			input:    "X25519MLKEM768,SecP256r1MLKEM768,SecP384r1MLKEM1024,MLKEM1024",
+			expected: []tls.CurveID{tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024},
+		},
+		{
+			name:     "curves with whitespace and extra commas",
+			input:    " X25519 ,, CurveP256,",
+			expected: []tls.CurveID{tls.X25519, tls.CurveP256},
+		},
+		{
+			name:        "unknown curve",
+			input:       "P-256",
+			expectError: true,
+			errorMsg:    `unknown curve "P-256", valid options are: CurveP256, CurveP384, CurveP521, X25519, X25519MLKEM768, SecP256r1MLKEM768, SecP384r1MLKEM1024, MLKEM1024`,
+		},
+		{
+			name:        "one valid one invalid curve",
+			input:       "X25519,INVALID_CURVE",
+			expectError: true,
+			errorMsg:    `unknown curve "INVALID_CURVE"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseCurvePreferences(tt.input)
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestSupportedCurves checks supportedCurves lists every curve of crypto/tls, as crypto/tls doesn't expose this list.
+// It relies on tls.CurveID.String, which returns the name of the known curves and "CurveID(<id>)" for the others.
+// If it fails after a Go upgrade, add the new curves to supportedCurves (TestIsTLS13OnlyCurve then checks if they require TLS 1.3,
+// and TestIsFIPSApprovedCurve, run in FIPS 140-3 mode by make test, checks if they are FIPS-approved).
+func TestSupportedCurves(t *testing.T) {
+	var known []tls.CurveID
+	for i := range 1 << 16 {
+		if id := tls.CurveID(i); !strings.HasPrefix(id.String(), "CurveID(") {
+			known = append(known, id)
+		}
+	}
+	assert.ElementsMatch(t, known, supportedCurves)
+}
+
+// TestIsTLS13OnlyCurve checks isTLS13OnlyCurve matches crypto/tls, which doesn't expose this information:
+// for each curve, a TLS 1.2 handshake allowing only this curve must fail if and only if isTLS13OnlyCurve returns true.
+func TestIsTLS13OnlyCurve(t *testing.T) {
+	for _, curve := range supportedCurves {
+		t.Run(curve.String(), func(t *testing.T) {
+			if fips140.Enabled() && !isFIPSApprovedCurve(curve) {
+				t.Skip("crypto/tls only uses the FIPS-approved curves in FIPS 140-3 mode")
+			}
+			server := httptest.NewUnstartedServer(http.NotFoundHandler())
+			server.TLS = &tls.Config{CurvePreferences: []tls.CurveID{curve}}
+			// The TLS 1.2 handshake failures are expected.
+			server.Config.ErrorLog = log.New(io.Discard, "", 0)
+			server.StartTLS()
+			defer server.Close()
+			address := server.Listener.Addr().String()
+
+			// The curve works with TLS 1.3, so a failure with TLS 1.2 is caused by the TLS version.
+			state, err := dialTLSServer(address, &tls.Config{CurvePreferences: supportedCurves})
+			require.NoError(t, err)
+			require.Equal(t, curve, state.CurveID)
+
+			state, err = dialTLSServer(address, &tls.Config{MaxVersion: tls.VersionTLS12, CurvePreferences: supportedCurves})
+			if isTLS13OnlyCurve(curve) {
+				assert.Error(t, err, "crypto/tls uses %s with TLS 1.2: remove it from isTLS13OnlyCurve", curve)
+			} else if assert.NoError(t, err, "crypto/tls doesn't use %s with TLS 1.2: add it to isTLS13OnlyCurve", curve) {
+				assert.Equal(t, curve, state.CurveID)
+			}
+		})
+	}
+}
+
+func TestCheckCurvePreferences(t *testing.T) {
+	tests := []struct {
+		name            string
+		minVersion      uint16
+		maxVersion      uint16
+		curves          []tls.CurveID
+		expectedError   string
+		expectedWarning string
+	}{
+		{
+			name:   "default curves without versions",
+			curves: nil,
+		},
+		{
+			name:   "post-quantum and classic curves without versions",
+			curves: []tls.CurveID{tls.X25519MLKEM768, tls.X25519},
+		},
+		{
+			name:            "only post-quantum curves without versions",
+			curves:          []tls.CurveID{tls.X25519MLKEM768},
+			expectedWarning: "TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit",
+		},
+		{
+			name:            "only post-quantum curves with TLS 1.2 min version",
+			minVersion:      tls.VersionTLS12,
+			maxVersion:      tls.VersionTLS13,
+			curves:          []tls.CurveID{tls.X25519MLKEM768, tls.MLKEM1024},
+			expectedWarning: "TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit",
+		},
+		{
+			name:       "only post-quantum curves with TLS 1.3 min version",
+			minVersion: tls.VersionTLS13,
+			curves:     []tls.CurveID{tls.X25519MLKEM768, tls.MLKEM1024},
+		},
+		{
+			name:       "classic curves with TLS 1.2",
+			maxVersion: tls.VersionTLS12,
+			curves:     []tls.CurveID{tls.X25519, tls.CurveP256},
+		},
+		{
+			name:       "default curves with TLS 1.2",
+			maxVersion: tls.VersionTLS12,
+		},
+		{
+			name:          "only post-quantum curves with TLS 1.2",
+			maxVersion:    tls.VersionTLS12,
+			curves:        []tls.CurveID{tls.X25519MLKEM768, tls.SecP256r1MLKEM768},
+			expectedError: "--web.tls-curve-preferences only contains curves that require TLS 1.3 (X25519MLKEM768, SecP256r1MLKEM768), but --web.tls-max-version is 1.2",
+		},
+		{
+			name:            "some post-quantum curves with TLS 1.2",
+			maxVersion:      tls.VersionTLS12,
+			curves:          []tls.CurveID{tls.X25519MLKEM768, tls.X25519},
+			expectedWarning: "the curves X25519MLKEM768 of --web.tls-curve-preferences are ignored, because they require TLS 1.3 and --web.tls-max-version is 1.2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := newLogHook(t)
+			err := checkCurvePreferences(tt.minVersion, tt.maxVersion, tt.curves)
+			if tt.expectedError != "" {
+				require.EqualError(t, err, tt.expectedError)
+			} else {
+				require.NoError(t, err)
+			}
+
+			// checkCurvePreferences only logs the warning.
+			if tt.expectedWarning == "" {
+				assert.Empty(t, hook.AllEntries())
+			} else if assert.Len(t, hook.AllEntries(), 1) {
+				assert.Equal(t, logrus.WarnLevel, hook.LastEntry().Level)
+				assert.Equal(t, tt.expectedWarning, hook.LastEntry().Message)
+			}
+		})
+	}
+}
+
+// TestIsFIPSApprovedCurve checks isFIPSApprovedCurve matches crypto/tls, which doesn't expose this information:
+// in FIPS 140-3 mode, a handshake allowing only one curve must succeed if and only if isFIPSApprovedCurve returns true.
+// It only runs in FIPS 140-3 mode: GODEBUG=fips140=on go test ./echo/
+func TestIsFIPSApprovedCurve(t *testing.T) {
+	if !fips140.Enabled() {
+		t.Skip("crypto/tls only restricts the curves in FIPS 140-3 mode (GODEBUG=fips140=on)")
+	}
+	for _, curve := range supportedCurves {
+		t.Run(curve.String(), func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.NotFoundHandler())
+			server.TLS = &tls.Config{CurvePreferences: []tls.CurveID{curve}}
+			// The handshake failures with the curves that aren't FIPS-approved are expected.
+			server.Config.ErrorLog = log.New(io.Discard, "", 0)
+			server.StartTLS()
+			defer server.Close()
+
+			state, err := dialTLSServer(server.Listener.Addr().String(), &tls.Config{CurvePreferences: supportedCurves})
+			if !isFIPSApprovedCurve(curve) {
+				assert.Error(t, err, "crypto/tls uses %s in FIPS 140-3 mode: add it to isFIPSApprovedCurve", curve)
+			} else if assert.NoError(t, err, "crypto/tls doesn't use %s in FIPS 140-3 mode: remove it from isFIPSApprovedCurve", curve) {
+				assert.Equal(t, curve, state.CurveID)
+			}
+		})
+	}
+}
+
+func TestCheckFIPSCurvePreferences(t *testing.T) {
+	tests := []struct {
+		name            string
+		curves          []tls.CurveID
+		expected        []tls.CurveID
+		expectedError   string
+		expectedWarning string
+	}{
+		{
+			name:     "default curves",
+			curves:   nil,
+			expected: nil,
+		},
+		{
+			name:     "only FIPS-approved curves",
+			curves:   []tls.CurveID{tls.X25519MLKEM768, tls.CurveP256},
+			expected: []tls.CurveID{tls.X25519MLKEM768, tls.CurveP256},
+		},
+		{
+			name:            "some curves not FIPS-approved",
+			curves:          []tls.CurveID{tls.X25519MLKEM768, tls.X25519, tls.CurveP256},
+			expected:        []tls.CurveID{tls.X25519MLKEM768, tls.CurveP256},
+			expectedWarning: "the curves X25519 of --web.tls-curve-preferences are ignored, because they are not allowed in FIPS 140-3 mode",
+		},
+		{
+			name:          "no FIPS-approved curve",
+			curves:        []tls.CurveID{tls.X25519},
+			expectedError: "--web.tls-curve-preferences only contains curves that are not allowed in FIPS 140-3 mode (X25519)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := newLogHook(t)
+			result, err := checkFIPSCurvePreferences(tt.curves)
+			if tt.expectedError != "" {
+				require.EqualError(t, err, tt.expectedError)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+
+			if tt.expectedWarning == "" {
+				assert.Empty(t, hook.AllEntries())
+			} else if assert.Len(t, hook.AllEntries(), 1) {
+				assert.Equal(t, logrus.WarnLevel, hook.LastEntry().Level)
+				assert.Equal(t, tt.expectedWarning, hook.LastEntry().Message)
+			}
+		})
+	}
+}
+
 // mockRegister is a simple implementation of Register for testing
 type mockRegister struct{}
 
@@ -361,11 +629,108 @@ func TestBuild_TLSCipherSuitesValidation(t *testing.T) {
 	}
 }
 
+func TestBuild_TLSCurvePreferencesValidation(t *testing.T) {
+	const noHTTPSWarning = "--web.tls-min-version, --web.tls-max-version, --web.tls-cipher-suites and --web.tls-curve-preferences have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)"
+	tests := []struct {
+		name             string
+		curves           string
+		maxVersion       string
+		https            bool
+		expectError      bool
+		errorMsg         string
+		expectedWarnings []string
+	}{
+		{
+			name:  "empty curves",
+			https: true,
+		},
+		{
+			name:   "valid curves",
+			curves: "X25519MLKEM768,CurveP256",
+			https:  true,
+		},
+		{
+			name:        "invalid curves",
+			curves:      "INVALID_CURVE",
+			expectError: true,
+			errorMsg:    "invalid TLS curve preferences",
+		},
+		{
+			name:        "only post-quantum curves with TLS 1.2",
+			curves:      "X25519MLKEM768",
+			maxVersion:  "1.2",
+			https:       true,
+			expectError: true,
+			errorMsg:    "only contains curves that require TLS 1.3 (X25519MLKEM768)",
+		},
+		{
+			name:             "only post-quantum curves",
+			curves:           "X25519MLKEM768",
+			https:            true,
+			expectedWarnings: []string{"TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit"},
+		},
+		// Without HTTPS, the TLS flags have no effect: the curves are not checked.
+		{
+			name:             "only post-quantum curves with TLS 1.2 without HTTPS",
+			curves:           "X25519MLKEM768",
+			maxVersion:       "1.2",
+			expectedWarnings: []string{noHTTPSWarning},
+		},
+		{
+			name:             "only post-quantum curves without HTTPS",
+			curves:           "X25519MLKEM768",
+			expectedWarnings: []string{noHTTPSWarning},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origCurvePreferences := tlsCurvePreferences
+			origMaxVersion := tlsMaxVersion
+			origCert := cert
+			origKey := key
+			tlsCurvePreferences = tt.curves
+			tlsMaxVersion = tt.maxVersion
+			if tt.https {
+				// Build doesn't read the files.
+				cert = "/path/cert.pem"
+				key = "/path/key.pem"
+			}
+			defer func() {
+				tlsCurvePreferences = origCurvePreferences
+				tlsMaxVersion = origMaxVersion
+				cert = origCert
+				key = origKey
+			}()
+
+			hook := newLogHook(t)
+			_, err := NewBuilder().
+				APIRegistration(&mockRegister{}).
+				OverrideDefaultMiddleware(true).
+				Build()
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				return
+			}
+			require.NoError(t, err)
+			var warnings []string
+			for _, entry := range hook.AllEntries() {
+				if entry.Level == logrus.WarnLevel {
+					warnings = append(warnings, entry.Message)
+				}
+			}
+			assert.Equal(t, tt.expectedWarnings, warnings)
+		})
+	}
+}
+
 func TestBuild_TLSFlagValues(t *testing.T) {
 	// Save original flag values
 	origMinVersion := tlsMinVersion
 	origMaxVersion := tlsMaxVersion
 	origCipherSuites := tlsCipherSuites
+	origCurvePreferences := tlsCurvePreferences
 	origCert := cert
 	origKey := key
 
@@ -373,6 +738,7 @@ func TestBuild_TLSFlagValues(t *testing.T) {
 	tlsMinVersion = "1.2"
 	tlsMaxVersion = "1.3"
 	tlsCipherSuites = "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+	tlsCurvePreferences = "X25519,CurveP256"
 	cert = "/path/cert.pem"
 	key = "/path/key.pem"
 
@@ -381,6 +747,7 @@ func TestBuild_TLSFlagValues(t *testing.T) {
 		tlsMinVersion = origMinVersion
 		tlsMaxVersion = origMaxVersion
 		tlsCipherSuites = origCipherSuites
+		tlsCurvePreferences = origCurvePreferences
 		cert = origCert
 		key = origKey
 	}()
@@ -403,8 +770,33 @@ func TestBuild_TLSFlagValues(t *testing.T) {
 	assert.Equal(t, uint16(tls.VersionTLS12), s.tlsMinVersion)
 	assert.Equal(t, uint16(tls.VersionTLS13), s.tlsMaxVersion)
 	assert.Equal(t, []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256}, s.tlsCipherSuites)
+	assert.Equal(t, []tls.CurveID{tls.X25519, tls.CurveP256}, s.tlsCurvePreferences)
 	assert.Equal(t, "/path/cert.pem", s.cert)
 	assert.Equal(t, "/path/key.pem", s.key)
+}
+
+func TestServer_ConfigureHTTPServer(t *testing.T) {
+	hook := newLogHook(t)
+	s, err := NewBuilder().
+		APIRegistration(&mockRegister{}).
+		OverrideDefaultMiddleware(true).
+		build()
+	require.NoError(t, err)
+
+	// echo creates the http.Server with a ReadTimeout of 30s, which must not be kept, as there is no read timeout by default.
+	httpServer := &http.Server{ReadTimeout: 30 * time.Second}
+	s.configureHTTPServer(httpServer)
+	assert.Equal(t, defaultReadHeaderTimeout, httpServer.ReadHeaderTimeout)
+	assert.Equal(t, time.Duration(0), httpServer.ReadTimeout)
+	assert.Equal(t, time.Duration(0), httpServer.WriteTimeout)
+	assert.Equal(t, defaultIdleTimeout, httpServer.IdleTimeout)
+
+	// The errors of the server are logged with logrus (their levels are tested by TestHTTPServerErrorWriter).
+	require.NotNil(t, httpServer.ErrorLog)
+	httpServer.ErrorLog.Print("http: TLS handshake error from 127.0.0.1:1234: EOF")
+	entry := hook.LastEntry()
+	require.NotNil(t, entry)
+	assert.Equal(t, "http: TLS handshake error from 127.0.0.1:1234: EOF", entry.Message)
 }
 
 func TestIsHTTP2Compatible(t *testing.T) {
@@ -457,7 +849,7 @@ func TestIsHTTP2Compatible(t *testing.T) {
 
 // startTLSServer starts the HTTPS server with the given TLS options and returns its address.
 // The server is stopped at the end of the test.
-func startTLSServer(t *testing.T, certFile, keyFile, minVersion, cipherSuites string) string {
+func startTLSServer(t *testing.T, certFile, keyFile, minVersion, cipherSuites, curves string) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -466,15 +858,18 @@ func startTLSServer(t *testing.T, certFile, keyFile, minVersion, cipherSuites st
 
 	origMinVersion := tlsMinVersion
 	origCipherSuites := tlsCipherSuites
+	origCurvePreferences := tlsCurvePreferences
 	origCert := cert
 	origKey := key
 	tlsMinVersion = minVersion
 	tlsCipherSuites = cipherSuites
+	tlsCurvePreferences = curves
 	cert = certFile
 	key = keyFile
 	defer func() {
 		tlsMinVersion = origMinVersion
 		tlsCipherSuites = origCipherSuites
+		tlsCurvePreferences = origCurvePreferences
 		cert = origCert
 		key = origKey
 	}()
@@ -499,9 +894,15 @@ func startTLSServer(t *testing.T, certFile, keyFile, minVersion, cipherSuites st
 		require.NoError(t, task.Finalize())
 	})
 
+	// echo wraps the listener with TLS before serving, so the server is ready once the port is open. A TLS handshake
+	// would not work when a client CA is set with TLS 1.2, as the server rejects a client without certificate.
 	require.Eventually(t, func() bool {
-		_, dialErr := dialTLSServer(address, &tls.Config{})
-		return dialErr == nil
+		conn, dialErr := net.Dial("tcp", address)
+		if dialErr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
 	}, 5*time.Second, 10*time.Millisecond)
 	return address
 }
@@ -523,7 +924,7 @@ func dialTLSServer(address string, config *tls.Config) (tls.ConnectionState, err
 func TestServer_TLS(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile := writeCertificate(t, dir, 1)
-	address := startTLSServer(t, certFile, keyFile, "1.3", "")
+	address := startTLSServer(t, certFile, keyFile, "1.3", "", "")
 
 	state, err := dialTLSServer(address, &tls.Config{})
 	require.NoError(t, err)
@@ -544,7 +945,7 @@ func TestServer_TLS(t *testing.T) {
 
 func TestServer_TLSCipherSuitesWithoutHTTP2(t *testing.T) {
 	certFile, keyFile := writeCertificate(t, t.TempDir(), 1)
-	address := startTLSServer(t, certFile, keyFile, "1.2", "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384")
+	address := startTLSServer(t, certFile, keyFile, "1.2", "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384", "")
 
 	// The server starts, and the configured cipher suite is used with HTTP/1.1.
 	state, err := dialTLSServer(address, &tls.Config{MaxVersion: tls.VersionTLS12})
@@ -560,6 +961,131 @@ func TestServer_TLSCipherSuitesWithoutHTTP2(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestServer_TLSClientCA(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := writeCertificate(t, dir, 1)
+	// The client certificates are self-signed, so they are their own CA.
+	clientPEM, clientKeyPEM := generateCertificate(t, 2)
+	clientCertificate, err := tls.X509KeyPair(clientPEM, clientKeyPEM)
+	require.NoError(t, err)
+	otherClientPEM, otherClientKeyPEM := generateCertificate(t, 3)
+	otherClientCertificate, err := tls.X509KeyPair(otherClientPEM, otherClientKeyPEM)
+	require.NoError(t, err)
+	caFile := filepath.Join(dir, "ca.crt")
+	replaceFile(t, caFile, clientPEM)
+
+	origClientCAFile := clientCAFile
+	clientCAFile = caFile
+	defer func() {
+		clientCAFile = origClientCAFile
+	}()
+	address := startTLSServer(t, certFile, keyFile, "", "", "")
+
+	// An HTTP request is sent, as with TLS 1.3, the client completes the handshake before the server verifies its
+	// certificate: a rejected certificate is only reported when the client reads the response.
+	get := func(certificates ...tls.Certificate) error {
+		client := &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig:   &tls.Config{InsecureSkipVerify: true, Certificates: certificates},
+				DisableKeepAlives: true,
+			},
+		}
+		resp, reqErr := client.Get("https://" + address)
+		if reqErr != nil {
+			return reqErr
+		}
+		return resp.Body.Close()
+	}
+
+	// Only the clients presenting a certificate signed by the CA are accepted.
+	require.NoError(t, get(clientCertificate))
+	assert.ErrorContains(t, get(), "certificate required")
+	assert.ErrorContains(t, get(otherClientCertificate), "unknown certificate authority")
+
+	// The CA is rotated: the new connections are verified with the new one.
+	replaceFile(t, caFile, otherClientPEM)
+	require.NoError(t, get(otherClientCertificate))
+	assert.ErrorContains(t, get(clientCertificate), "unknown certificate authority")
+
+	// The new file is invalid: the previous CA is kept.
+	replaceFile(t, caFile, []byte("not a certificate"))
+	require.NoError(t, get(otherClientCertificate))
+	assert.ErrorContains(t, get(clientCertificate), "unknown certificate authority")
+}
+
+// A resumed session must not bypass the rotation of the client CA.
+func TestServer_TLSClientCAResumption(t *testing.T) {
+	for _, version := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		t.Run(tls.VersionName(version), func(t *testing.T) {
+			dir := t.TempDir()
+			certFile, keyFile := writeCertificate(t, dir, 1)
+			clientPEM, clientKeyPEM := generateCertificate(t, 2)
+			clientCertificate, err := tls.X509KeyPair(clientPEM, clientKeyPEM)
+			require.NoError(t, err)
+			otherClientPEM, _ := generateCertificate(t, 3)
+			caFile := filepath.Join(dir, "ca.crt")
+			replaceFile(t, caFile, clientPEM)
+
+			origClientCAFile := clientCAFile
+			clientCAFile = caFile
+			defer func() {
+				clientCAFile = origClientCAFile
+			}()
+			address := startTLSServer(t, certFile, keyFile, "", "", "")
+
+			// Every connection uses the same TLS configuration, so the same session cache.
+			clientConfig := &tls.Config{
+				InsecureSkipVerify: true,
+				Certificates:       []tls.Certificate{clientCertificate},
+				ClientSessionCache: tls.NewLRUClientSessionCache(1),
+				MaxVersion:         version,
+			}
+			get := func() (*tls.ConnectionState, error) {
+				client := &http.Client{
+					Timeout:   5 * time.Second,
+					Transport: &http.Transport{TLSClientConfig: clientConfig, DisableKeepAlives: true},
+				}
+				resp, reqErr := client.Get("https://" + address)
+				if reqErr != nil {
+					return nil, reqErr
+				}
+				return resp.TLS, resp.Body.Close()
+			}
+
+			_, err = get()
+			require.NoError(t, err)
+			state, err := get()
+			require.NoError(t, err)
+			require.True(t, state.DidResume)
+
+			// The CA is rotated: the session is not resumed, and the full handshake fails.
+			replaceFile(t, caFile, otherClientPEM)
+			_, err = get()
+			assert.ErrorContains(t, err, "unknown certificate authority")
+		})
+	}
+}
+
+func TestServer_TLSCurvePreferences(t *testing.T) {
+	certFile, keyFile := writeCertificate(t, t.TempDir(), 1)
+	address := startTLSServer(t, certFile, keyFile, "", "", "CurveP384,SecP384r1MLKEM1024")
+
+	// The configured curves are used, with TLS 1.3 and TLS 1.2.
+	state, err := dialTLSServer(address, &tls.Config{CurvePreferences: []tls.CurveID{tls.SecP384r1MLKEM1024}})
+	require.NoError(t, err)
+	assert.Equal(t, tls.SecP384r1MLKEM1024, state.CurveID)
+	state, err = dialTLSServer(address, &tls.Config{MaxVersion: tls.VersionTLS12, CurvePreferences: []tls.CurveID{tls.CurveP384}})
+	require.NoError(t, err)
+	assert.Equal(t, tls.CurveP384, state.CurveID)
+
+	// The other curves are rejected, including the ones Go enables by default.
+	for _, curve := range []tls.CurveID{tls.X25519, tls.X25519MLKEM768} {
+		_, err = dialTLSServer(address, &tls.Config{CurvePreferences: []tls.CurveID{curve}})
+		require.Error(t, err, curve.String())
+	}
+}
+
 func TestBuild_PartialTLSConfiguration(t *testing.T) {
 	origHooks := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
 	t.Cleanup(func() {
@@ -571,6 +1097,7 @@ func TestBuild_PartialTLSConfiguration(t *testing.T) {
 		name            string
 		certFile        string
 		keyFile         string
+		clientCAFile    string
 		minVersion      string
 		expectedError   string
 		expectedWarning bool
@@ -594,6 +1121,11 @@ func TestBuild_PartialTLSConfiguration(t *testing.T) {
 			expectedError: "--web.tls-cert-file must be set when --web.tls-key-file is set",
 		},
 		{
+			name:          "only the client CA is set",
+			clientCAFile:  "ca.crt",
+			expectedError: "--web.tls-cert-file and --web.tls-key-file must be set when --web.tls-client-ca-file is set",
+		},
+		{
 			name:            "TLS option without HTTPS",
 			minVersion:      "1.2",
 			expectedWarning: true,
@@ -609,13 +1141,16 @@ func TestBuild_PartialTLSConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			origCert := cert
 			origKey := key
+			origClientCAFile := clientCAFile
 			origMinVersion := tlsMinVersion
 			cert = tt.certFile
 			key = tt.keyFile
+			clientCAFile = tt.clientCAFile
 			tlsMinVersion = tt.minVersion
 			defer func() {
 				cert = origCert
 				key = origKey
+				clientCAFile = origClientCAFile
 				tlsMinVersion = origMinVersion
 			}()
 			hook.Reset()
@@ -659,4 +1194,121 @@ func TestBuild_PartialTLSConfigurationDoesNotModifyTheBuilder(t *testing.T) {
 	cert = ""
 	_, err = builder.Build()
 	require.NoError(t, err)
+}
+
+// runServer runs the server built by the builder until the end of the test, when it is stopped and finalized.
+func runServer(t *testing.T, builder *Builder) {
+	t.Helper()
+	task, err := builder.Build()
+	require.NoError(t, err)
+	require.NoError(t, task.Initialize())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	var executeErr error
+	go func() {
+		defer close(done)
+		executeErr = task.Execute(ctx, cancel)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		assert.NoError(t, executeErr)
+		assert.NoError(t, task.Finalize())
+	})
+}
+
+// startServer runs the server built by the builder on a random port until the end of the test, and returns its address,
+// read from the logs.
+func startServer(t *testing.T, hook *logrustest.Hook, builder *Builder) string {
+	t.Helper()
+	builder.ListenAddress("127.0.0.1:0")
+	runServer(t, builder)
+	return waitForListenAddress(t, hook)
+}
+
+// waitForListenAddress waits for the server to log the address it listens on, and returns it.
+func waitForListenAddress(t *testing.T, hook *logrustest.Hook) string {
+	t.Helper()
+	var address string
+	require.Eventually(t, func() bool {
+		for _, entry := range hook.AllEntries() {
+			if after, ok := strings.CutPrefix(entry.Message, "http server started on "); ok {
+				address = after
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond)
+	return address
+}
+
+type blockingRegister struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingRegister) RegisterRoute(e *echoLib.Echo) {
+	e.GET("/block", func(c *echoLib.Context) error {
+		close(r.started)
+		<-r.release
+		return c.NoContent(http.StatusOK)
+	})
+}
+
+func TestServer_FinalizeReturnsTheShutdownTimeout(t *testing.T) {
+	hook := newLogHook(t)
+	api := &blockingRegister{started: make(chan struct{}), release: make(chan struct{})}
+	builder := NewBuilder().APIRegistration(api).OverrideDefaultMiddleware(true)
+	builder.ListenAddress("127.0.0.1:0")
+	s, err := builder.build()
+	require.NoError(t, err)
+	s.shutdownTimeout = 50 * time.Millisecond
+	require.NoError(t, s.Initialize())
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	var executeErr error
+	go func() {
+		defer close(done)
+		executeErr = s.Execute(ctx, cancel)
+	}()
+	address := waitForListenAddress(t, hook)
+
+	// A request is still running when the server is stopped, so the graceful shutdown reaches its timeout.
+	requestErr := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, reqErr := client.Get("http://" + address + "/block")
+		if reqErr == nil {
+			reqErr = resp.Body.Close()
+		}
+		requestErr <- reqErr
+	}()
+	select {
+	case <-api.started:
+	case reqErr := <-requestErr:
+		t.Fatalf("the request ended before reaching the handler: %v", reqErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request didn't reach the handler")
+	}
+	cancel()
+	<-done
+	close(api.release)
+	// The shutdown timeout doesn't interrupt the request still running: it ends normally once released.
+	assert.NoError(t, <-requestErr)
+
+	// The server stopped as requested, but its shutdown failed: the task must report it, like before echo v5.
+	assert.NoError(t, executeErr)
+	err = s.Finalize()
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorContains(t, err, "server shutdown not properly")
+}
+
+func TestServer_FinalizeWithoutShutdownError(t *testing.T) {
+	hook := newLogHook(t)
+	address := startServer(t, hook, NewBuilder().APIRegistration(&mockRegister{}).OverrideDefaultMiddleware(true))
+	assert.NotEmpty(t, address)
+	// startServer stops the server and checks Finalize returns no error at the end of the test.
 }

@@ -14,11 +14,12 @@
 package echo
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +28,7 @@ import (
 type helloRegister struct{}
 
 func (h *helloRegister) RegisterRoute(e *echo.Echo) {
-	e.GET("/hello", func(c echo.Context) error {
+	e.GET("/hello", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 }
@@ -89,4 +90,56 @@ func TestBuilder_MetricsRegistrationError(t *testing.T) {
 		PrometheusRegisterer(registry).
 		Build()
 	assert.Error(t, err)
+}
+
+type clientRegister struct{}
+
+func (r *clientRegister) RegisterRoute(e *echo.Echo) {
+	e.GET("/client", func(c *echo.Context) error {
+		return c.String(http.StatusOK, c.Scheme()+" "+c.RealIP())
+	})
+}
+
+func TestBuilder_IPAndSchemeExtractors(t *testing.T) {
+	_, proxyNetwork, err := net.ParseCIDR("203.0.113.0/24")
+	require.NoError(t, err)
+	tests := []struct {
+		name      string
+		configure func(b *Builder)
+		// expected is the scheme and the IP address of the client, as seen by the handler.
+		expected string
+	}{
+		{
+			// The forwarding headers can be spoofed by any client, so they are not trusted from a public address by default.
+			name:      "default",
+			configure: func(*Builder) {},
+			expected:  "http 203.0.113.10",
+		},
+		{
+			name: "trusted proxy",
+			configure: func(b *Builder) {
+				b.IPExtractor(echo.ExtractIPFromXFFHeader(echo.TrustIPRange(proxyNetwork))).
+					SchemeExtractor(echo.ExtractSchemeFromHeaders(echo.TrustIPRange(proxyNetwork)))
+			},
+			expected: "https 198.51.100.7",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewBuilder().APIRegistration(&clientRegister{}).OverrideDefaultMiddleware(true)
+			tt.configure(builder)
+			handler, err := builder.BuildHandler()
+			require.NoError(t, err)
+
+			// The request comes from a proxy with a public address (like a cloud load balancer).
+			req := httptest.NewRequest(http.MethodGet, "/client", nil)
+			req.RemoteAddr = "203.0.113.10:1234"
+			req.Header.Set(echo.HeaderXForwardedFor, "198.51.100.7")
+			req.Header.Set(echo.HeaderXForwardedProto, "https")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.expected, rec.Body.String())
+		})
+	}
 }

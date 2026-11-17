@@ -17,7 +17,6 @@ import (
 	"context"
 	"io"
 	"net"
-	"net/http"
 	"testing"
 	"time"
 
@@ -133,12 +132,10 @@ func TestBuild_HTTPServerTimeouts(t *testing.T) {
 			tt.configure(builder)
 			s, err := builder.build()
 			require.NoError(t, err)
-			for _, httpServer := range []*http.Server{s.e.Server, s.e.TLSServer} {
-				assert.Equal(t, tt.expectedReadHeaderTimeout, httpServer.ReadHeaderTimeout)
-				assert.Equal(t, tt.expectedReadTimeout, httpServer.ReadTimeout)
-				assert.Equal(t, tt.expectedWriteTimeout, httpServer.WriteTimeout)
-				assert.Equal(t, tt.expectedIdleTimeout, httpServer.IdleTimeout)
-			}
+			assert.Equal(t, tt.expectedReadHeaderTimeout, s.readHeaderTimeout)
+			assert.Equal(t, tt.expectedReadTimeout, s.readTimeout)
+			assert.Equal(t, tt.expectedWriteTimeout, s.writeTimeout)
+			assert.Equal(t, tt.expectedIdleTimeout, s.idleTimeout)
 		})
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,6 +35,104 @@ func TestValidatorImpl_VerifyShouldSetDefaultValue(t *testing.T) {
 	}
 	_ = v.Verify()
 	assert.Equal(t, "set", mc.Foo.FieldToSet)
+}
+
+type requiredName struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port"`
+}
+
+func (r *requiredName) Verify() error {
+	if len(r.Name) == 0 {
+		return errors.New("name cannot be empty")
+	}
+	if r.Port == 0 {
+		r.Port = 8080
+	}
+	return nil
+}
+
+func TestValidatorImpl_VerifyCollections(t *testing.T) {
+	type Config struct {
+		Values   map[string]requiredName    `yaml:"values"`
+		Pointers map[string]*requiredName   `yaml:"pointers"`
+		Slices   map[string][]requiredName  `yaml:"slices"`
+		Nested   map[string]map[string]*foo `yaml:"nested"`
+		Array    [2]requiredName            `yaml:"array"`
+		Any      map[string]any             `yaml:"any"`
+	}
+	validArray := [2]requiredName{{Name: "a"}, {Name: "b"}}
+
+	t.Run("the values are verified", func(t *testing.T) {
+		for name, c := range map[string]*Config{
+			"map of structs":       {Array: validArray, Values: map[string]requiredName{"a": {}}},
+			"map of pointers":      {Array: validArray, Pointers: map[string]*requiredName{"a": {}}},
+			"map of slices":        {Array: validArray, Slices: map[string][]requiredName{"a": {{}}}},
+			"element of the array": {Array: [2]requiredName{{Name: "a"}, {}}},
+		} {
+			assert.EqualError(t, (&validatorImpl{config: c}).Verify(), "name cannot be empty", name)
+		}
+	})
+
+	t.Run("the default values are saved", func(t *testing.T) {
+		c := &Config{
+			Values:   map[string]requiredName{"a": {Name: "a"}},
+			Pointers: map[string]*requiredName{"a": {Name: "a"}, "nil": nil},
+			Slices:   map[string][]requiredName{"a": {{Name: "a"}}},
+			Nested:   map[string]map[string]*foo{"a": {"b": {}}},
+			Array:    validArray,
+			Any:      map[string]any{"a": 1, "nil": nil},
+		}
+		require.NoError(t, (&validatorImpl{config: c}).Verify())
+		assert.Equal(t, requiredName{Name: "a", Port: 8080}, c.Values["a"])
+		assert.Equal(t, &requiredName{Name: "a", Port: 8080}, c.Pointers["a"])
+		assert.Contains(t, c.Pointers, "nil")
+		assert.Nil(t, c.Pointers["nil"])
+		assert.Equal(t, []requiredName{{Name: "a", Port: 8080}}, c.Slices["a"])
+		assert.Equal(t, "set", c.Nested["a"]["b"].FieldToSet)
+		assert.Equal(t, [2]requiredName{{Name: "a", Port: 8080}, {Name: "b", Port: 8080}}, c.Array)
+		assert.Equal(t, map[string]any{"a": 1, "nil": nil}, c.Any)
+	})
+}
+
+func TestResolveImpl_VerifyMapValues(t *testing.T) {
+	type Config struct {
+		Providers map[string]requiredName `yaml:"providers"`
+	}
+	c := Config{}
+	require.NoError(t, NewResolver[Config]().SetConfigData([]byte("providers:\n  a:\n    name: foo\n")).Resolve(&c).Verify())
+	assert.Equal(t, map[string]requiredName{"a": {Name: "foo", Port: 8080}}, c.Providers)
+
+	c = Config{}
+	assert.EqualError(t, NewResolver[Config]().SetConfigData([]byte("providers:\n  a:\n    port: 80\n")).Resolve(&c).Verify(), "name cannot be empty")
+}
+
+type strictConfig struct {
+	Database struct {
+		Timeout string `yaml:"timeout"`
+		Name    string `yaml:"name"`
+	} `yaml:"database"`
+}
+
+func TestResolveImpl_Strict(t *testing.T) {
+	// The unknown field x-defaults is only used to declare a YAML anchor.
+	data := []byte("x-defaults: &defaults\n  timeout: 30s\ndatabase:\n  <<: *defaults\n  name: perses\n")
+
+	t.Run("an unknown field is an error by default", func(t *testing.T) {
+		var c strictConfig
+		err := NewResolver[strictConfig]().SetEnvPrefix("STRICT_TEST").SetConfigData(data).Resolve(&c).Verify()
+		assert.ErrorContains(t, err, "field x-defaults not found")
+	})
+
+	t.Run("an unknown field is ignored when the strict mode is disabled", func(t *testing.T) {
+		configFile := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(configFile, data, 0600))
+		var c strictConfig
+		err := NewResolver[strictConfig]().SetEnvPrefix("STRICT_TEST").Strict(false).SetConfigFile(configFile).Resolve(&c).Verify()
+		require.NoError(t, err)
+		assert.Equal(t, "30s", c.Database.Timeout)
+		assert.Equal(t, "perses", c.Database.Name)
+	})
 }
 
 func TestResolveImpl_EmptyEnvPrefix(t *testing.T) {

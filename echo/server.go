@@ -25,6 +25,10 @@
 //
 // - Register a Middleware.
 //
+// - Serve HTTPS when the flags --web.tls-cert-file and --web.tls-key-file are set (see InitFlag).
+// The certificate is reloaded when the files change. The other flags --web.tls-* configure the TLS versions, the cipher
+// suites, the curves and the client certificates verification (mTLS).
+//
 // # Usage
 //
 // Instantiate a simple server task :
@@ -32,9 +36,10 @@
 //	package my_package
 //
 //	import (
-//	    "context"
-//
+//	    "github.com/perses/common/app"
 //	    "github.com/perses/common/echo"
+//	    "github.com/prometheus/client_golang/prometheus"
+//	    "github.com/sirupsen/logrus"
 //	)
 //
 //	const (
@@ -44,28 +49,38 @@
 //	)
 //
 //	func main() {
-//	    serverTask, err := echo.NewBuilder(addr).
-//	            APIRegistration(echo.NewMetricsAPI(true)).
-//	            MetricNamespace(metricNamespace).
-//	            Build()
+//	    builder := echo.NewBuilder().
+//	            APIRegistration(echo.NewMetricsAPI(true, prometheus.DefaultRegisterer, prometheus.DefaultGatherer)).
+//	            MetricNamespace(metricNamespace)
+//	    // Without it, the address is the one of the flag --web.listen-address (see InitFlag), or ":8080".
+//	    builder.ListenAddress(addr)
+//	    serverTask, err := builder.Build()
+//	    if err != nil {
+//	        logrus.WithError(err).Fatal("unable to build the HTTP server")
+//	    }
+//	    // run the HTTP server until the process receives SIGINT or SIGTERM
+//	    app.NewRunner().WithTasks(serverTask).Start()
 //	}
 package echo
 
 import (
 	"cmp"
 	"context"
+	"crypto/fips140"
 	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/perses/common/async"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors/version"
@@ -86,7 +101,7 @@ const (
 var (
 	// http address listened
 	addr string
-	// hide port when printing the server status on stdout
+	// hide the address listened when logging that the server started
 	hidePort bool
 	// https cert for server
 	cert string
@@ -98,16 +113,59 @@ var (
 	tlsMaxVersion string
 	// TLS cipher suites (comma-separated list of cipher suite names)
 	tlsCipherSuites string
+	// CA certificates used to verify the client certificates (mTLS)
+	clientCAFile string
+	// TLS curve preferences, also called key exchange mechanisms (comma-separated list of curve names)
+	tlsCurvePreferences string
 )
+
+// supportedCurves lists the TLS curves (key exchange mechanisms) implemented by crypto/tls.
+// Unlike the cipher suites (see tls.CipherSuites), crypto/tls doesn't expose this list, so it must be updated when Go adds a curve.
+var supportedCurves = []tls.CurveID{
+	tls.CurveP256,
+	tls.CurveP384,
+	tls.CurveP521,
+	tls.X25519,
+	tls.X25519MLKEM768,
+	tls.SecP256r1MLKEM768,
+	tls.SecP384r1MLKEM1024,
+	tls.MLKEM1024,
+}
+
+// isTLS13OnlyCurve tells if crypto/tls only uses the curve with TLS 1.3 (like its unexported isTLS13OnlyKeyExchange).
+// Today, these are the post-quantum key exchanges. TestIsTLS13OnlyCurve checks it matches the behavior of crypto/tls.
+func isTLS13OnlyCurve(id tls.CurveID) bool {
+	switch id {
+	case tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024:
+		return true
+	default:
+		return false
+	}
+}
+
+// isFIPSApprovedCurve tells if crypto/tls uses the curve in FIPS 140-3 mode (like its unexported allowedCurvePreferencesFIPS).
+// TestIsFIPSApprovedCurve checks it matches the behavior of crypto/tls when the tests run with GODEBUG=fips140=on.
+// Note: Go+BoringCrypto builds allow fewer curves, but their FIPS mode (crypto/tls/fipsonly) isn't reported by fips140.Enabled.
+func isFIPSApprovedCurve(id tls.CurveID) bool {
+	switch id {
+	case tls.CurveP256, tls.CurveP384, tls.CurveP521,
+		tls.X25519MLKEM768, tls.SecP256r1MLKEM768, tls.SecP384r1MLKEM1024, tls.MLKEM1024:
+		return true
+	default:
+		return false
+	}
+}
 
 func InitFlag() {
 	flag.StringVar(&addr, "web.listen-address", defaultAddr, "The address to listen on for HTTP requests, web interface and telemetry.")
-	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, it won't be print on stdout the port listened to receive the HTTP request")
+	flag.BoolVar(&hidePort, "web.hide-port", false, "If true, the address listened to receive the HTTP requests is not logged when the server starts")
 	flag.StringVar(&cert, "web.tls-cert-file", "", "The path to the cert to use for the HTTPS server. It is reloaded when the file changes.")
 	flag.StringVar(&key, "web.tls-key-file", "", "The path to the key to use for the HTTPS server. It is reloaded when the file changes.")
 	flag.StringVar(&tlsMinVersion, "web.tls-min-version", "", "Minimum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsMaxVersion, "web.tls-max-version", "", "Maximum TLS version (e.g., \"1.2\", \"1.3\")")
 	flag.StringVar(&tlsCipherSuites, "web.tls-cipher-suites", "", "Comma-separated list of TLS cipher suite names")
+	flag.StringVar(&clientCAFile, "web.tls-client-ca-file", "", "The path to the CA certificates (PEM) used to verify the client certificates. When set, every client must present a certificate signed by one of them (mTLS), including the health probes. Only these CAs are trusted, not the system ones. It is reloaded when the file changes, but the established connections are not verified again.")
+	flag.StringVar(&tlsCurvePreferences, "web.tls-curve-preferences", "", "Comma-separated list of TLS curves (key exchange mechanisms), e.g. \"X25519MLKEM768,X25519,CurveP256\". Replaces Go's default list, including its post-quantum curves; the order is ignored.")
 }
 
 // parseTLSVersion converts a version string (e.g., "1.2", "1.3") to a tls.Version constant.
@@ -174,6 +232,88 @@ func parseCipherSuites(suites string) ([]uint16, error) {
 	return result, nil
 }
 
+// parseCurvePreferences converts a comma-separated list of curve names (e.g., "X25519", "CurveP256", "X25519MLKEM768") to their IDs.
+// Returns nil for empty string (not set), or an error for unknown curve names.
+func parseCurvePreferences(curves string) ([]tls.CurveID, error) {
+	if curves == "" {
+		return nil, nil
+	}
+
+	curveMap := make(map[string]tls.CurveID, len(supportedCurves))
+	names := make([]string, 0, len(supportedCurves))
+	for _, id := range supportedCurves {
+		curveMap[id.String()] = id
+		names = append(names, id.String())
+	}
+
+	var result []tls.CurveID
+	for name := range strings.SplitSeq(curves, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		id, ok := curveMap[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown curve %q, valid options are: %s", name, strings.Join(names, ", "))
+		}
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+// checkFIPSCurvePreferences returns the curves crypto/tls uses in FIPS 140-3 mode, where it ignores the curves that
+// aren't FIPS-approved: when none of the curves is approved, no key exchange is possible.
+func checkFIPSCurvePreferences(curves []tls.CurveID) ([]tls.CurveID, error) {
+	var approved []tls.CurveID
+	var notApproved []string
+	for _, id := range curves {
+		if isFIPSApprovedCurve(id) {
+			approved = append(approved, id)
+		} else {
+			notApproved = append(notApproved, id.String())
+		}
+	}
+	if len(notApproved) == 0 {
+		return curves, nil
+	}
+	if len(approved) == 0 {
+		return nil, fmt.Errorf("--web.tls-curve-preferences only contains curves that are not allowed in FIPS 140-3 mode (%s)",
+			strings.Join(notApproved, ", "))
+	}
+	logrus.Warnf("the curves %s of --web.tls-curve-preferences are ignored, because they are not allowed in FIPS 140-3 mode",
+		strings.Join(notApproved, ", "))
+	return approved, nil
+}
+
+// checkCurvePreferences checks the curves can be used with the TLS versions:
+//   - when TLS 1.3 is disabled and all the curves require it, no ECDHE key exchange is possible.
+//   - when TLS 1.2 is enabled and all the curves require TLS 1.3, the TLS 1.2 clients cannot connect.
+func checkCurvePreferences(minVersion, maxVersion uint16, curves []tls.CurveID) error {
+	var tls13Only []string
+	for _, id := range curves {
+		if isTLS13OnlyCurve(id) {
+			tls13Only = append(tls13Only, id.String())
+		}
+	}
+	if len(tls13Only) == 0 {
+		return nil
+	}
+	onlyTLS13 := len(tls13Only) == len(curves)
+	// The versions are 0 when unset: TLS 1.2 and TLS 1.3 are then both enabled.
+	tls13Disabled := maxVersion != 0 && maxVersion < tls.VersionTLS13
+	switch {
+	case tls13Disabled && onlyTLS13:
+		return fmt.Errorf("--web.tls-curve-preferences only contains curves that require TLS 1.3 (%s), but --web.tls-max-version is %s",
+			strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
+	case tls13Disabled:
+		logrus.Warnf("the curves %s of --web.tls-curve-preferences are ignored, because they require TLS 1.3 and --web.tls-max-version is %s",
+			strings.Join(tls13Only, ", "), tlsVersionToString(maxVersion))
+	case onlyTLS13 && minVersion < tls.VersionTLS13:
+		logrus.Warn("TLS 1.2 clients cannot connect, because all the curves of --web.tls-curve-preferences require TLS 1.3: set --web.tls-min-version to 1.3 to make it explicit")
+	}
+	return nil
+}
+
 type Register interface {
 	RegisterRoute(e *echo.Echo)
 }
@@ -192,6 +332,8 @@ type Builder struct {
 	readTimeout        time.Duration
 	writeTimeout       time.Duration
 	idleTimeout        time.Duration
+	ipExtractor        echo.IPExtractor
+	schemeExtractor    echo.SchemeExtractor
 }
 
 func NewBuilder() *Builder {
@@ -292,6 +434,28 @@ func (b *Builder) IdleTimeout(timeout time.Duration) *Builder {
 	return b
 }
 
+// IPExtractor sets how echo.Context.RealIP gets the IP address of the client.
+// By default, the address of the direct peer (http.Request.RemoteAddr) is used, as the headers X-Forwarded-For and X-Real-IP
+// can be spoofed by any client. When the server is behind proxies, use an extractor that only trusts the headers set by them,
+// for example:
+//
+//	builder.IPExtractor(echo.ExtractIPFromXFFHeader(echo.TrustIPRange(proxyNetwork)))
+func (b *Builder) IPExtractor(extractor echo.IPExtractor) *Builder {
+	b.ipExtractor = extractor
+	return b
+}
+
+// SchemeExtractor sets how echo.Context.Scheme gets the scheme (http or https) used by the client.
+// By default, the headers like X-Forwarded-Proto are only trusted when the request comes from a loopback, link-local or
+// private network address. When the server is behind a proxy with another address (like a CDN or a cloud load balancer),
+// use an extractor that trusts it, for example:
+//
+//	builder.SchemeExtractor(echo.ExtractSchemeFromHeaders(echo.TrustIPRange(proxyNetwork)))
+func (b *Builder) SchemeExtractor(extractor echo.SchemeExtractor) *Builder {
+	b.schemeExtractor = extractor
+	return b
+}
+
 func (b *Builder) Build() (async.Task, error) {
 	return b.build()
 }
@@ -319,6 +483,8 @@ func (b *Builder) build() (*server, error) {
 		return nil, errors.New("--web.tls-key-file must be set when --web.tls-cert-file is set")
 	case cert == "" && key != "":
 		return nil, errors.New("--web.tls-cert-file must be set when --web.tls-key-file is set")
+	case cert == "" && clientCAFile != "":
+		return nil, errors.New("--web.tls-cert-file and --web.tls-key-file must be set when --web.tls-client-ca-file is set")
 	}
 	if len(b.addr) == 0 {
 		b.addr = addr
@@ -332,19 +498,9 @@ func (b *Builder) build() (*server, error) {
 		if b.gzipSkipper == nil {
 			b.gzipSkipper = middleware.DefaultSkipper
 		}
-		defaultMiddleware := []echo.MiddlewareFunc{
-			// Activate recover middleware to recover from panics anywhere in the chain.
-			// It prints stack trace and handles the control to the centralized HTTPErrorHandler.
-			// More information here: https://echo.labstack.com/middleware/recover
-			middleware.Recover(),
-			persesMiddleware.Logger(),
-			middleware.GzipWithConfig(
-				middleware.GzipConfig{
-					Skipper: b.gzipSkipper,
-					Level:   5,
-				},
-			),
-		}
+		// The logger and the metrics are executed first, so they see the result of every request.
+		// It includes the panics, as the middleware Recover turns them into errors returned to the previous middlewares.
+		defaultMiddleware := []echo.MiddlewareFunc{persesMiddleware.Logger()}
 		if b.promRegisterer == nil {
 			b.promRegisterer = prometheus.DefaultRegisterer
 		}
@@ -354,8 +510,20 @@ func (b *Builder) build() (*server, error) {
 				return nil, err
 			}
 			defaultMiddleware = append(defaultMiddleware, metricMiddleware.ProcessHTTPRequest)
-
 		}
+		defaultMiddleware = append(defaultMiddleware,
+			// Recover from the panics anywhere in the rest of the chain.
+			// The panic is returned as an error (with the stack trace) that is logged by the central error handler.
+			// Only the stack of the goroutine that panicked is kept: getting the stacks of all the goroutines stops the world.
+			// More information here: https://echo.labstack.com/docs/middleware/recover
+			middleware.RecoverWithConfig(middleware.RecoverConfig{DisableStackAll: true}),
+			middleware.GzipWithConfig(
+				middleware.GzipConfig{
+					Skipper: b.gzipSkipper,
+					Level:   5,
+				},
+			),
+		)
 		mdws = append(defaultMiddleware, mdws...)
 	}
 
@@ -372,19 +540,39 @@ func (b *Builder) build() (*server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid TLS cipher suites: %w", err)
 	}
+	parsedCurvePreferences, err := parseCurvePreferences(tlsCurvePreferences)
+	if err != nil {
+		return nil, fmt.Errorf("invalid TLS curve preferences: %w", err)
+	}
 
 	// Validate that min version is not greater than max version
 	if parsedMinVersion != 0 && parsedMaxVersion != 0 && parsedMinVersion > parsedMaxVersion {
 		return nil, fmt.Errorf("TLS min version (%s) cannot be greater than max version (%s)",
 			tlsVersionToString(parsedMinVersion), tlsVersionToString(parsedMaxVersion))
 	}
-	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "") {
-		logrus.Warn("--web.tls-min-version, --web.tls-max-version and --web.tls-cipher-suites have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
+	// The curve checks only run when HTTPS is enabled: otherwise, the TLS flags have no effect (see the warning below).
+	if cert != "" {
+		usableCurves := parsedCurvePreferences
+		if fips140.Enabled() {
+			if usableCurves, err = checkFIPSCurvePreferences(usableCurves); err != nil {
+				return nil, err
+			}
+		}
+		if err = checkCurvePreferences(parsedMinVersion, parsedMaxVersion, usableCurves); err != nil {
+			return nil, err
+		}
+	}
+	if cert == "" && (tlsMinVersion != "" || tlsMaxVersion != "" || tlsCipherSuites != "" || tlsCurvePreferences != "") {
+		logrus.Warn("--web.tls-min-version, --web.tls-max-version, --web.tls-cipher-suites and --web.tls-curve-preferences have no effect because HTTPS is not enabled (--web.tls-cert-file and --web.tls-key-file are not set)")
 	}
 
-	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = hidePort
+	e := echo.NewWithConfig(echo.Config{
+		// echo logs with log/slog: its logs are written with logrus, like the other logs.
+		Logger:           slog.New(newLogrusHandler()),
+		HTTPErrorHandler: handleError,
+		IPExtractor:      b.ipExtractor,
+		SchemeExtractor:  b.schemeExtractor,
+	})
 	readHeaderTimeout := b.readHeaderTimeout
 	if readHeaderTimeout == 0 {
 		readHeaderTimeout = defaultReadHeaderTimeout
@@ -393,25 +581,25 @@ func (b *Builder) build() (*server, error) {
 			readHeaderTimeout = min(b.readTimeout, defaultReadHeaderTimeout)
 		}
 	}
-	for _, httpServer := range []*http.Server{e.Server, e.TLSServer} {
-		httpServer.ReadHeaderTimeout = readHeaderTimeout
-		httpServer.ReadTimeout = b.readTimeout
-		httpServer.WriteTimeout = b.writeTimeout
-		httpServer.IdleTimeout = cmp.Or(b.idleTimeout, defaultIdleTimeout)
-	}
 	return &server{
-		addr:            b.addr,
-		apis:            b.apis,
-		e:               e,
-		cert:            cert,
-		key:             key,
-		tlsMinVersion:   parsedMinVersion,
-		tlsMaxVersion:   parsedMaxVersion,
-		tlsCipherSuites: parsedCipherSuites,
-		mdws:            mdws,
-		preMDWs:         b.preMDWs,
-		shutdownTimeout: 30 * time.Second,
-		activatePprof:   b.activatePprof,
+		addr:                b.addr,
+		apis:                b.apis,
+		e:                   e,
+		cert:                cert,
+		key:                 key,
+		tlsMinVersion:       parsedMinVersion,
+		tlsMaxVersion:       parsedMaxVersion,
+		tlsCipherSuites:     parsedCipherSuites,
+		tlsCurvePreferences: parsedCurvePreferences,
+		clientCAFile:        clientCAFile,
+		mdws:                mdws,
+		preMDWs:             b.preMDWs,
+		shutdownTimeout:     30 * time.Second,
+		activatePprof:       b.activatePprof,
+		readHeaderTimeout:   readHeaderTimeout,
+		readTimeout:         b.readTimeout,
+		writeTimeout:        b.writeTimeout,
+		idleTimeout:         cmp.Or(b.idleTimeout, defaultIdleTimeout),
 	}, nil
 }
 
@@ -441,18 +629,26 @@ func (b *Builder) registerMetrics() (*persesMiddleware.Metrics, error) {
 
 type server struct {
 	async.Task
-	addr            string
-	apis            []Register
-	e               *echo.Echo
-	cert            string
-	key             string
-	tlsMinVersion   uint16
-	tlsMaxVersion   uint16
-	tlsCipherSuites []uint16
-	mdws            []echo.MiddlewareFunc
-	preMDWs         []echo.MiddlewareFunc
-	shutdownTimeout time.Duration
-	activatePprof   bool
+	addr                string
+	apis                []Register
+	e                   *echo.Echo
+	cert                string
+	key                 string
+	tlsMinVersion       uint16
+	tlsMaxVersion       uint16
+	tlsCipherSuites     []uint16
+	tlsCurvePreferences []tls.CurveID
+	clientCAFile        string
+	mdws                []echo.MiddlewareFunc
+	preMDWs             []echo.MiddlewareFunc
+	shutdownTimeout     time.Duration
+	activatePprof       bool
+	readHeaderTimeout   time.Duration
+	readTimeout         time.Duration
+	writeTimeout        time.Duration
+	idleTimeout         time.Duration
+	// shutdownErr is the error of the graceful shutdown done by Execute (like a timeout), returned by Finalize.
+	shutdownErr error
 }
 
 func (s *server) String() string {
@@ -460,6 +656,8 @@ func (s *server) String() string {
 }
 
 func (s *server) Initialize() error {
+	// The context of the request is saved before any middleware can replace it (see saveRequestContext).
+	s.e.Pre(saveRequestContext)
 	// init global middleware
 	// Remove trailing slash middleware a trailing slash from the request URI
 	s.e.Pre(middleware.RemoveTrailingSlash())
@@ -478,64 +676,105 @@ func (s *server) Initialize() error {
 }
 
 func (s *server) Execute(ctx context.Context, cancelFunc context.CancelFunc) error {
-	// start server
-	// The channel is buffered, so the go routine is not blocked when the server is stopped after the end of this method.
-	serverErr := make(chan error, 1)
-	go func() {
-		var err error
-		if s.cert != "" && s.key != "" {
-			err = s.startTLS()
-		} else {
-			err = s.e.Start(s.addr)
+	startConfig := echo.StartConfig{
+		Address:    s.addr,
+		HideBanner: true,
+		// The address is logged by logListenerAddr instead of echo, to tell if the server uses HTTPS (like echo v4).
+		HidePort:         true,
+		ListenerAddrFunc: s.logListenerAddr,
+		GracefulTimeout:  s.shutdownTimeout,
+		// echo logs this error and returns nil. It is returned by Finalize instead, so the task reports the failure.
+		// It is called before Start returns, so before Finalize is called.
+		OnShutdownError: func(err error) {
+			s.shutdownErr = err
+		},
+		BeforeServeFunc: func(httpServer *http.Server) error {
+			s.configureHTTPServer(httpServer)
+			return nil
+		},
+	}
+	if s.cert != "" && s.key != "" {
+		tlsConfig, err := s.tlsConfig()
+		if err != nil {
+			cancelFunc()
+			return fmt.Errorf("http server stopped unexpectedly: %w", err)
 		}
-		logrus.Debug("go routine running the http server has been stopped.")
-		serverErr <- err
-	}()
-	// Wait for the end of the task or cancellation
-	select {
-	case err := <-serverErr:
-		// Server ended unexpectedly (for example, the address is already in use, or the TLS certificate cannot be loaded)
+		startConfig.TLSConfig = tlsConfig
+	}
+	// Start blocks until the context is canceled, then it gracefully shuts down the server.
+	// It returns before if the server cannot start or stops unexpectedly (for example, when the address is already in use).
+	err := startConfig.Start(ctx, s.e)
+	logrus.Debug("http server has been stopped")
+	if ctx.Err() == nil {
 		// In our ecosystem, as we are producing each time an HTTP API, if the HTTP api stopped, we want to stop the whole application.
 		// That's why we are calling the parent cancelFunc
 		cancelFunc()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("http server stopped unexpectedly: %w", err)
-		}
-	case <-ctx.Done():
-		// Cancellation requested by the parent context. The server is stopped by the method Finalize.
-		logrus.Debug("server cancellation requested")
+	}
+	if err != nil {
+		return fmt.Errorf("http server stopped unexpectedly: %w", err)
 	}
 	return nil
 }
 
-// startTLS starts the HTTPS server.
-// echo.StartTLS is not used because it replaces the TLS configuration, and it loads the certificate only once.
-func (s *server) startTLS() error {
-	reloader, err := newCertificateReloader(s.cert, s.key)
+// configureHTTPServer sets the timeouts and the error logger of the http.Server created by echo.
+// Every timeout is set, even when it is zero, as echo sets a default ReadTimeout.
+func (s *server) configureHTTPServer(httpServer *http.Server) {
+	httpServer.ReadHeaderTimeout = s.readHeaderTimeout
+	httpServer.ReadTimeout = s.readTimeout
+	httpServer.WriteTimeout = s.writeTimeout
+	httpServer.IdleTimeout = s.idleTimeout
+	// echo logs every error of the server as an error, but most of them are caused by the clients (see httpServerErrorWriter).
+	httpServer.ErrorLog = log.New(newHTTPServerErrorWriter(), "", 0)
+}
+
+// tlsConfig builds the TLS configuration of the HTTPS server.
+// The certificate and the client CA are provided by reloaders, so they are rotated without restarting the server.
+func (s *server) tlsConfig() (*tls.Config, error) {
+	certReloader, err := newCertificateReloader(s.cert, s.key)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tlsConfig := &tls.Config{
-		MinVersion:     s.tlsMinVersion,
-		MaxVersion:     s.tlsMaxVersion,
-		CipherSuites:   s.tlsCipherSuites,
-		GetCertificate: reloader.GetCertificate,
+		MinVersion:       s.tlsMinVersion,
+		MaxVersion:       s.tlsMaxVersion,
+		CipherSuites:     s.tlsCipherSuites,
+		CurvePreferences: s.tlsCurvePreferences,
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return certReloader.get(), nil
+		},
 	}
-	switch {
-	case s.e.DisableHTTP2:
-	case !isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites):
-		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, required by HTTP/2")
-	default:
+	if isHTTP2Compatible(s.tlsMinVersion, s.tlsCipherSuites) {
 		tlsConfig.NextProtos = []string{"h2"}
+	} else {
+		logrus.Warn("HTTP/2 is disabled because --web.tls-cipher-suites contains neither TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 nor TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, one of which HTTP/2 requires with TLS 1.2 (RFC 7540, section 9.2.2)")
 	}
-	s.e.TLSServer.Addr = s.addr
-	s.e.TLSServer.TLSConfig = tlsConfig
-	return s.e.StartServer(s.e.TLSServer)
+	if s.clientCAFile != "" {
+		clientCAReloader, caErr := newClientCAReloader(s.clientCAFile)
+		if caErr != nil {
+			return nil, caErr
+		}
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		// Without ClientCAs, the client certificates would be verified with the system CAs, so the base configuration
+		// has them as well in case it is used without GetConfigForClient.
+		tlsConfig.ClientCAs = clientCAReloader.get()
+		// tls.Config.ClientCAs cannot be changed once the server started, so each handshake uses a copy of the
+		// configuration with the current client CA. The resumed sessions are verified again with it as well.
+		tlsConfig.GetConfigForClient = func(_ *tls.ClientHelloInfo) (*tls.Config, error) {
+			config := tlsConfig.Clone()
+			config.GetConfigForClient = nil
+			config.ClientCAs = clientCAReloader.get()
+			return config, nil
+		}
+	}
+	return tlsConfig, nil
 }
 
 // isHTTP2Compatible tells if HTTP/2 can be offered with the given TLS settings.
-// HTTP/2 requires one of these cipher suites when TLS 1.2 is allowed (RFC 7540, section 9.2.2),
-// otherwise net/http refuses to start the server.
+// With TLS 1.2, HTTP/2 deployments must support TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (RFC 7540, section 9.2.2), so every
+// HTTP/2 client can negotiate a cipher suite allowed by HTTP/2 (the connections using a cipher suite forbidden by
+// RFC 7540, appendix A, are rejected). net/http checks it only when the TLS configuration is set on the http.Server,
+// not on the listener like here. So, like net/http, HTTP/2 is only offered when TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+// or TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 is configured.
 func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
 	if len(cipherSuites) == 0 || minVersion >= tls.VersionTLS13 {
 		return true
@@ -547,12 +786,9 @@ func isHTTP2Compatible(minVersion uint16, cipherSuites []uint16) bool {
 }
 
 func (s *server) Finalize() error {
-	logrus.Debug("try to shutdown the http server")
-	shutdownCtx, shutdownCancelFunc := context.WithTimeout(context.Background(), s.shutdownTimeout)
-	// call shutdownCancelFunc to release the resources in case the task ended before the timeout
-	defer shutdownCancelFunc()
-	if err := s.e.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server shutdown not properly: %w", err)
+	// The server is gracefully stopped by Execute once the context is canceled.
+	if s.shutdownErr != nil {
+		return fmt.Errorf("server shutdown not properly: %w", s.shutdownErr)
 	}
 	return nil
 }
