@@ -96,6 +96,8 @@ const (
 	defaultReadHeaderTimeout = 10 * time.Second
 	// defaultIdleTimeout closes the keep-alive connections that are not used anymore.
 	defaultIdleTimeout = 2 * time.Minute
+	// defaultShutdownTimeout is the time given to the requests in progress to end when the server is stopped.
+	defaultShutdownTimeout = 30 * time.Second
 )
 
 var (
@@ -332,6 +334,7 @@ type Builder struct {
 	readTimeout        time.Duration
 	writeTimeout       time.Duration
 	idleTimeout        time.Duration
+	shutdownTimeout    time.Duration
 	ipExtractor        echo.IPExtractor
 	schemeExtractor    echo.SchemeExtractor
 }
@@ -431,6 +434,16 @@ func (b *Builder) WriteTimeout(timeout time.Duration) *Builder {
 // The default value is 2m, whatever the ReadTimeout is. A negative value disables the timeout.
 func (b *Builder) IdleTimeout(timeout time.Duration) *Builder {
 	b.idleTimeout = timeout
+	return b
+}
+
+// ShutdownTimeout sets the maximum duration to wait for the requests in progress to end when the server is stopped
+// (see http.Server.Shutdown). Once it is reached, the server stops waiting for them, and the task returns an error from Finalize.
+// The default value is 30s. A zero or negative value keeps the default one.
+// When the server is started with app.Runner, it should be shorter than the timeout of the runner (see app.Runner.SetTimeout),
+// otherwise the runner stops waiting for the server before the end of the graceful shutdown.
+func (b *Builder) ShutdownTimeout(timeout time.Duration) *Builder {
+	b.shutdownTimeout = timeout
 	return b
 }
 
@@ -581,6 +594,11 @@ func (b *Builder) build() (*server, error) {
 			readHeaderTimeout = min(b.readTimeout, defaultReadHeaderTimeout)
 		}
 	}
+	shutdownTimeout := b.shutdownTimeout
+	// A negative timeout would disable the graceful shutdown of echo, and the server would never stop.
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = defaultShutdownTimeout
+	}
 	return &server{
 		addr:                b.addr,
 		apis:                b.apis,
@@ -594,7 +612,7 @@ func (b *Builder) build() (*server, error) {
 		clientCAFile:        clientCAFile,
 		mdws:                mdws,
 		preMDWs:             b.preMDWs,
-		shutdownTimeout:     30 * time.Second,
+		shutdownTimeout:     shutdownTimeout,
 		activatePprof:       b.activatePprof,
 		readHeaderTimeout:   readHeaderTimeout,
 		readTimeout:         b.readTimeout,

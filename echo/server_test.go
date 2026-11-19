@@ -1259,11 +1259,10 @@ func (r *blockingRegister) RegisterRoute(e *echoLib.Echo) {
 func TestServer_FinalizeReturnsTheShutdownTimeout(t *testing.T) {
 	hook := newLogHook(t)
 	api := &blockingRegister{started: make(chan struct{}), release: make(chan struct{})}
-	builder := NewBuilder().APIRegistration(api).OverrideDefaultMiddleware(true)
+	builder := NewBuilder().APIRegistration(api).OverrideDefaultMiddleware(true).ShutdownTimeout(50 * time.Millisecond)
 	builder.ListenAddress("127.0.0.1:0")
 	s, err := builder.build()
 	require.NoError(t, err)
-	s.shutdownTimeout = 50 * time.Millisecond
 	require.NoError(t, s.Initialize())
 
 	ctx, cancel := context.WithCancel(t.Context())
