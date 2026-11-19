@@ -26,21 +26,29 @@ const (
 	txtFormat  format = "text"
 )
 
+// defaultLevel is the default value of the flag --log.level.
+const defaultLevel = "info"
+
+// The values of the flags are initialized with their default value, so the Builder uses them when the flags are not
+// registered (see InitFlag).
 var (
 	// logFormat is the format to use for logging.
-	logFormat format
+	logFormat = txtFormat
 	// level of the log for logrus only
-	logLevel string
+	logLevel = defaultLevel
 	// includes the calling method as a field in the log
 	logMethodTrace bool
 )
 
 func InitFlag() {
-	flag.StringVar(&logLevel, "log.level", "info", "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
+	flag.StringVar(&logLevel, "log.level", defaultLevel, "log level. Possible value: panic, fatal, error, warning, info, debug, trace")
 	flag.StringVar((*string)(&logFormat), "log.format", string(txtFormat), "log format. Possible value: text, json")
 	flag.BoolVar(&logMethodTrace, "log.method-trace", false, "include the calling method as a field in the log. Can be useful to see immediately where the log comes from")
 }
 
+// NewBuilder creates a Builder configuring the global logrus logger (see Builder.SetUp).
+// The settings that are not set on the Builder come from the flags (see InitFlag), or are the default values of the
+// flags when they are not registered.
 func NewBuilder() *Builder {
 	return &Builder{}
 }
@@ -108,7 +116,7 @@ func (b *Builder) build() {
 	if b.level == nil {
 		level, err := logrus.ParseLevel(logLevel)
 		if err != nil {
-			logrus.Warnf("Invalid log level from flag value: %s", level)
+			logrus.Warnf("Invalid log level from flag value: %s", logLevel)
 			level = logrus.InfoLevel
 		}
 		b.level = &level
