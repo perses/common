@@ -139,3 +139,38 @@ func TestBuild_HTTPServerTimeouts(t *testing.T) {
 		})
 	}
 }
+
+func TestBuild_ShutdownTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		timeout  time.Duration
+		expected time.Duration
+	}{
+		{
+			name:     "default timeout",
+			expected: defaultShutdownTimeout,
+		},
+		{
+			name:     "custom timeout",
+			timeout:  2 * time.Minute,
+			expected: 2 * time.Minute,
+		},
+		{
+			// echo would never stop the server with a negative timeout, so the default one is kept.
+			name:     "negative timeout",
+			timeout:  -1,
+			expected: defaultShutdownTimeout,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewBuilder().
+				APIRegistration(&mockRegister{}).
+				OverrideDefaultMiddleware(true).
+				ShutdownTimeout(tt.timeout)
+			s, err := builder.build()
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, s.shutdownTimeout)
+		})
+	}
+}
