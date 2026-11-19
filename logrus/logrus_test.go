@@ -15,11 +15,53 @@ package logrus
 
 import (
 	"flag"
+	"io"
 	"testing"
 
 	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
 )
+
+// The values of the flags before InitFlag is called by TestBuild, like in an application that doesn't register them.
+var (
+	logLevelWithoutFlags       = logLevel
+	logFormatWithoutFlags      = logFormat
+	logMethodTraceWithoutFlags = logMethodTrace
+)
+
+// newLogHook captures the logs of the standard logrus logger until the end of the test.
+func newLogHook(t *testing.T) *logrustest.Hook {
+	t.Helper()
+	logger := logrus.StandardLogger()
+	origHooks := logger.ReplaceHooks(make(logrus.LevelHooks))
+	origOutput := logger.Out
+	logger.SetOutput(io.Discard)
+	t.Cleanup(func() {
+		logger.ReplaceHooks(origHooks)
+		logger.SetOutput(origOutput)
+	})
+	return logrustest.NewLocal(logger)
+}
+
+// logMessages returns the messages of the logs captured by the hook.
+func logMessages(hook *logrustest.Hook) []string {
+	var messages []string
+	for _, entry := range hook.AllEntries() {
+		messages = append(messages, entry.Message)
+	}
+	return messages
+}
+
+// setFlagValues changes the values of the flags until the end of the test.
+func setFlagValues(t *testing.T, level string, f format, methodTrace bool) {
+	t.Helper()
+	origLevel, origFormat, origMethodTrace := logLevel, logFormat, logMethodTrace
+	logLevel, logFormat, logMethodTrace = level, f, methodTrace
+	t.Cleanup(func() {
+		logLevel, logFormat, logMethodTrace = origLevel, origFormat, origMethodTrace
+	})
+}
 
 func TestBuild(t *testing.T) {
 	InitFlag()
@@ -68,5 +110,68 @@ func TestBuild(t *testing.T) {
 			b.build()
 			assert.Equal(t, test.result, b)
 		})
+	}
+}
+
+func TestBuild_WithoutFlags(t *testing.T) {
+	setFlagValues(t, logLevelWithoutFlags, logFormatWithoutFlags, logMethodTraceWithoutFlags)
+	hook := newLogHook(t)
+	infoLevel := logrus.InfoLevel
+	debugLevel := logrus.DebugLevel
+	testCase := []struct {
+		name    string
+		builder *Builder
+		result  *Builder
+	}{
+		{
+			name:    "nothing set",
+			builder: NewBuilder(),
+			result: &Builder{
+				level:  &infoLevel,
+				format: txtFormat,
+			},
+		},
+		{
+			name:    "level set",
+			builder: NewBuilder().Level("debug"),
+			result: &Builder{
+				level:  &debugLevel,
+				format: txtFormat,
+			},
+		},
+		{
+			name:    "format set",
+			builder: NewBuilder().Format("json"),
+			result: &Builder{
+				level:  &infoLevel,
+				format: jsonFormat,
+			},
+		},
+	}
+	for _, test := range testCase {
+		t.Run(test.name, func(t *testing.T) {
+			hook.Reset()
+			test.builder.build()
+			assert.Equal(t, test.result, test.builder)
+			// The default values of the flags are used, so there is nothing to warn about.
+			assert.Empty(t, logMessages(hook))
+		})
+	}
+}
+
+func TestBuild_InvalidFlagValues(t *testing.T) {
+	setFlagValues(t, "verbose", "xml", false)
+	hook := newLogHook(t)
+	b := NewBuilder()
+	b.build()
+	infoLevel := logrus.InfoLevel
+	assert.Equal(t, &Builder{level: &infoLevel, format: txtFormat}, b)
+	// The warnings must tell which values are invalid.
+	assert.Equal(t, []string{
+		"Invalid log level from flag value: verbose",
+		"Invalid log format from the flag: xml",
+	}, logMessages(hook))
+	for _, entry := range hook.AllEntries() {
+		assert.Equal(t, logrus.WarnLevel, entry.Level)
 	}
 }
