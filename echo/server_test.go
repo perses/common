@@ -196,6 +196,30 @@ func TestParseCipherSuites(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "legacy cipher suites",
+			input: "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256," +
+				"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256," +
+				"TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384," +
+				"TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256," +
+				"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256," +
+				"TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA," +
+				"TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA," +
+				"TLS_RSA_WITH_AES_128_GCM_SHA256,TLS_RSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_128_CBC_SHA256," +
+				"TLS_RSA_WITH_AES_128_CBC_SHA,TLS_RSA_WITH_AES_256_CBC_SHA,TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+			expected: []uint16{
+				tls.TLS_AES_128_GCM_SHA256, tls.TLS_AES_256_GCM_SHA384, tls.TLS_CHACHA20_POLY1305_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256, tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+				tls.TLS_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_RSA_WITH_AES_256_GCM_SHA384, tls.TLS_RSA_WITH_AES_128_CBC_SHA256,
+				tls.TLS_RSA_WITH_AES_128_CBC_SHA, tls.TLS_RSA_WITH_AES_256_CBC_SHA, tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+			},
+			expectError: false,
+		},
+		{
 			name:        "unknown cipher suite",
 			input:       "UNKNOWN_CIPHER_SUITE",
 			expected:    nil,
@@ -959,6 +983,34 @@ func TestServer_TLSCipherSuitesWithoutHTTP2(t *testing.T) {
 		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 	})
 	require.Error(t, err)
+}
+
+func TestServer_TLSLegacy(t *testing.T) {
+	if fips140.Enabled() {
+		t.Skip("crypto/tls rejects TLS 1.0 and the insecure cipher suites in FIPS 140-3 mode")
+	}
+	certFile, keyFile := writeCertificate(t, t.TempDir(), 1)
+	address := startTLSServer(t, certFile, keyFile, "1.0",
+		"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA", "")
+
+	// Insecure cipher suite.
+	state, err := dialTLSServer(address, &tls.Config{
+		MaxVersion:   tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, state.CipherSuite)
+
+	// TLS 1.0.
+	state, err = dialTLSServer(address, &tls.Config{MinVersion: tls.VersionTLS10, MaxVersion: tls.VersionTLS10})
+	require.NoError(t, err)
+	assert.Equal(t, uint16(tls.VersionTLS10), state.Version)
+	assert.Equal(t, tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, state.CipherSuite)
+
+	// HTTP/2 still offered.
+	state, err = dialTLSServer(address, &tls.Config{})
+	require.NoError(t, err)
+	assert.Equal(t, "h2", state.NegotiatedProtocol)
 }
 
 func TestServer_TLSClientCA(t *testing.T) {
