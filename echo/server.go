@@ -207,6 +207,7 @@ func tlsVersionToString(version uint16) string {
 }
 
 // parseCipherSuites converts a comma-separated list of cipher suite names to their IDs.
+// Insecure cipher suites are accepted for legacy clients, with a warning.
 // Returns nil for empty string (not set), or an error for unknown cipher suite names.
 func parseCipherSuites(suites string) ([]uint16, error) {
 	if suites == "" {
@@ -214,9 +215,12 @@ func parseCipherSuites(suites string) ([]uint16, error) {
 	}
 
 	// Build a map of cipher suite names to IDs
-	cipherSuiteMap := make(map[string]uint16)
+	cipherSuiteMap := make(map[string]*tls.CipherSuite)
 	for _, cs := range tls.CipherSuites() {
-		cipherSuiteMap[cs.Name] = cs.ID
+		cipherSuiteMap[cs.Name] = cs
+	}
+	for _, cs := range tls.InsecureCipherSuites() {
+		cipherSuiteMap[cs.Name] = cs
 	}
 
 	var result []uint16
@@ -225,11 +229,14 @@ func parseCipherSuites(suites string) ([]uint16, error) {
 		if name == "" {
 			continue
 		}
-		id, ok := cipherSuiteMap[name]
+		cs, ok := cipherSuiteMap[name]
 		if !ok {
 			return nil, fmt.Errorf("unknown cipher suite %q", name)
 		}
-		result = append(result, id)
+		if cs.Insecure {
+			logrus.Warnf("the TLS cipher suite %q is insecure, it should only be used for compatibility with legacy clients", name)
+		}
+		result = append(result, cs.ID)
 	}
 	return result, nil
 }
