@@ -21,10 +21,12 @@ import (
 )
 
 type LoggerConfig struct {
+	// Skipper tells which requests are not logged at all. By default, every request is logged.
 	Skipper middleware.Skipper
-	// BlackListEndpoint is the list of endpoint that you don't want to log with the info level.
+	// BlackListEndpoint is the list of endpoint that you don't want to log with the info level: their requests are logged with the debug level.
 	// An endpoint is matched when the route registered in echo (like /metrics, /debug/pprof/* or /api/v1/projects/:project) contains one of these values.
 	// The route is used instead of the URL, as the URL is controlled by the client, who must not be able to change the log level of its requests.
+	// When it is empty, the default list is used: metrics, favicon and debug/pprof.
 	BlackListEndpoint []string
 }
 

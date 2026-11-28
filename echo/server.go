@@ -329,6 +329,7 @@ type Builder struct {
 	mdws               []echo.MiddlewareFunc
 	preMDWs            []echo.MiddlewareFunc
 	gzipSkipper        middleware.Skipper
+	loggerConfig       persesMiddleware.LoggerConfig
 	activatePprof      bool
 	readHeaderTimeout  time.Duration
 	readTimeout        time.Duration
@@ -375,6 +376,22 @@ func (b *Builder) OverrideDefaultMiddleware(override bool) *Builder {
 // If you don't use the default middleware, then there is no point of using this method.
 func (b *Builder) GzipSkipper(skipper middleware.Skipper) *Builder {
 	b.gzipSkipper = skipper
+	return b
+}
+
+// LoggerConfig sets the configuration of the middleware logging the requests, which is part of the default middleware
+// (see LoggerWithConfig in the package github.com/perses/common/echo/middleware). The fields not set keep their default value.
+// It can be used to log the requests of an endpoint called very often (like a health check endpoint called by the probes)
+// at the debug level, so they don't flood the logs. As BlackListEndpoint replaces the default list, it must also contain
+// the default endpoints (metrics, favicon and debug/pprof) for their requests to stay at the debug level:
+//
+//	builder.LoggerConfig(persesMiddleware.LoggerConfig{
+//	    BlackListEndpoint: []string{"metrics", "favicon", "debug/pprof", "/api/v1/health"},
+//	})
+//
+// If you override the default middleware (see OverrideDefaultMiddleware), then there is no point of using this method.
+func (b *Builder) LoggerConfig(config persesMiddleware.LoggerConfig) *Builder {
+	b.loggerConfig = config
 	return b
 }
 
@@ -513,7 +530,7 @@ func (b *Builder) build() (*server, error) {
 		}
 		// The logger and the metrics are executed first, so they see the result of every request.
 		// It includes the panics, as the middleware Recover turns them into errors returned to the previous middlewares.
-		defaultMiddleware := []echo.MiddlewareFunc{persesMiddleware.Logger()}
+		defaultMiddleware := []echo.MiddlewareFunc{persesMiddleware.LoggerWithConfig(b.loggerConfig)}
 		if b.promRegisterer == nil {
 			b.promRegisterer = prometheus.DefaultRegisterer
 		}

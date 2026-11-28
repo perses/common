@@ -21,8 +21,11 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	persesMiddleware "github.com/perses/common/echo/middleware"
 )
 
 type helloRegister struct{}
@@ -140,6 +143,90 @@ func TestBuilder_IPAndSchemeExtractors(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			require.Equal(t, http.StatusOK, rec.Code)
 			assert.Equal(t, tt.expected, rec.Body.String())
+		})
+	}
+}
+
+type probedRegister struct{}
+
+func (r *probedRegister) RegisterRoute(e *echo.Echo) {
+	handler := func(c *echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	}
+	e.GET("/api/v1/users", handler)
+	// Like the metrics, the health check endpoint is called very often (by the probes).
+	e.GET("/api/v1/health", handler)
+	e.GET("/metrics", handler)
+}
+
+// accessLog is the path and the level of a request logged by the logger middleware.
+type accessLog struct {
+	uri   string
+	level logrus.Level
+}
+
+func TestBuilder_LoggerConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(b *Builder)
+		// expected are the requests logged, in the order they are sent: /api/v1/users, /api/v1/health and /metrics.
+		expected []accessLog
+	}{
+		{
+			name:      "default",
+			configure: func(*Builder) {},
+			expected: []accessLog{
+				{uri: "/api/v1/users", level: logrus.InfoLevel},
+				{uri: "/api/v1/health", level: logrus.InfoLevel},
+				{uri: "/metrics", level: logrus.DebugLevel},
+			},
+		},
+		{
+			name: "blacklisted endpoints",
+			configure: func(b *Builder) {
+				b.LoggerConfig(persesMiddleware.LoggerConfig{BlackListEndpoint: []string{"metrics", "/api/v1/health"}})
+			},
+			expected: []accessLog{
+				{uri: "/api/v1/users", level: logrus.InfoLevel},
+				{uri: "/api/v1/health", level: logrus.DebugLevel},
+				{uri: "/metrics", level: logrus.DebugLevel},
+			},
+		},
+		{
+			name: "skipped requests",
+			configure: func(b *Builder) {
+				b.LoggerConfig(persesMiddleware.LoggerConfig{Skipper: func(c *echo.Context) bool {
+					return c.Path() == "/api/v1/health"
+				}})
+			},
+			// The default list of blacklisted endpoints is kept.
+			expected: []accessLog{
+				{uri: "/api/v1/users", level: logrus.InfoLevel},
+				{uri: "/metrics", level: logrus.DebugLevel},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hook := newLogHook(t)
+			builder := NewBuilder().APIRegistration(&probedRegister{})
+			tt.configure(builder)
+			handler, err := builder.BuildHandler()
+			require.NoError(t, err)
+			for _, path := range []string{"/api/v1/users", "/api/v1/health", "/metrics"} {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				require.Equal(t, http.StatusOK, rec.Code)
+			}
+
+			var logged []accessLog
+			for _, entry := range hook.AllEntries() {
+				// Only the logs of the logger middleware have the status of the response.
+				if _, ok := entry.Data["status"]; ok {
+					logged = append(logged, accessLog{uri: entry.Data["uri"].(string), level: entry.Level})
+				}
+			}
+			assert.Equal(t, tt.expected, logged)
 		})
 	}
 }
